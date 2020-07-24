@@ -65,13 +65,15 @@ void setup() {
   display.partialUpdate();
 
   HTTPClient http;
-  if(http.begin("http://example.com/index.html")) {   //Now try to connect to some web page (in this example www.example.com. And yes, this is a valid Web page :))
+  if(http.begin("https://tomotranslations.com/2020/07/24/this-hero-is-invincible-but-too-cautious-volume-3-chapter-144-part-1/")) {   //Now try to connect to some web page (in this example www.example.com. And yes, this is a valid Web page :))
     if(http.GET()>0) {                                //If connection was successful, try to read content of the Web page and display it on screen
       String htmlText;
       htmlText = http.getString();
-      display.setTextSize(1);                         //Set smaller text size, so everything can fit on screen
+      display.setTextSize(2);                         //Set smaller text size, so everything can fit on screen
       display.clearDisplay();
       display.setCursor(0, 0);
+      //Sample of how to implement container https://github.com/litehtml/litehtml/blob/1d4c9391619c092fecb71227f4910f7a3757767c/containers/linux/container_linux.cpp
+      //Sample of how to implement createFromString https://github.com/litehtml/litebrowser-linux/blob/master/src/html_widget.cpp#L125
       display.print(htmlText);
       display.display();
     }
