@@ -1,0 +1,16 @@
+board_manager:
+  additional_urls: [https://raw.githubusercontent.com/e-radionicacom/Croduino-Board-Definitions-for-Arduino-IDE/master/package_Croduino_Boards_index.json]
+daemon:
+  port: "50051"
+directories:
+  data: /root/.arduino15
+  downloads: /root/.arduino15/staging
+  user: /root/Arduino
+logging:
+  file: ""
+  format: text
+  level: info
+telemetry:
+  addr: :9090
+  enabled: true
+
