@@ -34,7 +34,7 @@ RUN arduino-cli core install Croduino_Boards:esp32
 #root@4775c80c6607:/workdir/microbrowser# arduino-cli compile -b Croduino_Boards:esp32:Inkplate6 --libraries="/workdir/Inkplate-6-Arduino-library" microbrowser.ino
 
 RUN apt-get update && apt-get install -y python-pip && pip install pyserial
-COPY Makefile microbrowser/Makefile
-#RUN arduino-cli compile --fqbn Croduino_Boards:esp32:Inkplate6 microbrowser.ino
 WORKDIR /go/microbrowser
+#COPY Makefile /go/microbrowser/Makefile
+#RUN arduino-cli compile --fqbn Croduino_Boards:esp32:Inkplate6 microbrowser.ino
 CMD ["make"]
