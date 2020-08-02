@@ -1,12 +1,14 @@
 #include "container_esp32_inkplate.h"
 #include "Inkplate.h"
+#include "DSEG14Classic_Regular20pt7b.h"    //Include second font
 
 container_esp32_inkplate::container_esp32_inkplate(Inkplate *d1)
 {
+  d1 -> setFont(&DSEG14Classic_Regular20pt7b);  //Select second font
   d1 -> begin();                  //Init Inkplate library (you should call this function ONLY ONCE)
   d1 -> clearDisplay();           //Clear frame buffer of display
   d1 -> display();                //Put clear image on display
-  d1 -> setTextSize(2);           //Set text scaling to two (text will be two times bigger)
+  // d1 -> setTextSize(2);           //Set text scaling to two (text will be two times bigger)
   d1 -> setCursor(0, 0);          //Set print position
   d1 -> setTextColor(BLACK, WHITE);                 //Set text color to black and background color to white
   // d1 -> println("Starting microbrowser, please hold one");    //Write text
@@ -34,10 +36,10 @@ container_esp32_inkplate::~container_esp32_inkplate(void)
   
 }
 
-// litehtml::uint_ptr create_font(const litehtml::tchar_t* faceName, int size, int weight, litehtml::font_style italic, unsigned int decoration, litehtml::font_metrics* fm)
-// {
+litehtml::uint_ptr container_esp32_inkplate::create_font(const litehtml::tchar_t* faceName, int size, int weight, litehtml::font_style italic, unsigned int decoration, litehtml::font_metrics* fm)
+{
   
-// }
+}
 //    virtual litehtml::uint_ptr create_font(const litehtml::tchar_t* faceName, int size, int weight, litehtml::font_style italic, unsigned int decoration, litehtml::font_metrics* fm) override;
 //    virtual void delete_font(litehtml::uint_ptr hFont) override;
 //    virtual int text_width(const litehtml::tchar_t* text, litehtml::uint_ptr hFont) override;

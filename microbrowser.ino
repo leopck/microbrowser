@@ -15,9 +15,9 @@
    15 July 2020 by e-radionica.com
 */
 
+#include "Inkplate.h"               //Include Inkplate library to the sketch
 #include "litehtml.h"
 #include "container_esp32_inkplate.h"
-#include "Inkplate.h"               //Include Inkplate library to the sketch
 #include <WiFi.h>                   //Include ESP32 WiFi library to our sketch
 #include <HTTPClient.h>             //Include HTTP library to this sketch
 
