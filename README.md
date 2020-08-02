@@ -9,7 +9,6 @@ WIP, does not work for now.
 - Inkplate on Arduino is working
 - Currently implementing litehtml document_container to use Inkplate rendering to draw onto the display from the output of the HTML container_esp32_inkplate
 
-
 # About this project
 
 A Microbrowser that is able to render HTML5 and CSS3 on a Microcontroller (ESP32). No Javascript support for now.
@@ -23,3 +22,20 @@ Recently I just received my Inkplate 6 from CrowdSupply, an E-paper powered by E
 - litehtml for rendering the HTML
 - Inkplate library for rendering the text and graphics onto the E-paper
 - (Future) LGVL - Light and Versatile Graphics Library https://lvgl.io/
+
+# Getting Started
+
+## Requirement
+- Docker
+
+## Compiling and Uploading to your Inkplate ESP32
+```
+git clone https://github.com/leopck/microbrowser/
+docker run -it --rm --privileged -v /dev/ttyUSB0:/dev/ttyUSB0 -v $PWD/microbrowser/:/go/microbrowser arduino-cli
+```
+
+## Compile only
+```
+git clone https://github.com/leopck/microbrowser/
+docker run -it --rm --privileged -v /dev/ttyUSB0:/dev/ttyUSB0 -v $PWD/microbrowser/:/go/microbrowser arduino-cli make compile
+```
