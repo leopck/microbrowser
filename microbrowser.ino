@@ -16,6 +16,7 @@
 */
 
 #include "litehtml.h"
+#include "container_esp32_inkplate.h"
 #include "Inkplate.h"               //Include Inkplate library to the sketch
 #include <WiFi.h>                   //Include ESP32 WiFi library to our sketch
 #include <HTTPClient.h>             //Include HTTP library to this sketch
@@ -24,17 +25,10 @@
 #define pass ""                     //Password of that WiFi network
 
 Inkplate display(INKPLATE_1BIT);    //Create an object on Inkplate library and also set library into 1 Bit mode (Monochrome)
+// Inkplate d1;
 
 void setup() {
-  display.begin();                  //Init Inkplate library (you should call this function ONLY ONCE)
-  display.clearDisplay();           //Clear frame buffer of display
-  display.display();                //Put clear image on display
-  display.setTextSize(2);           //Set text scaling to two (text will be two times bigger)
-  display.setCursor(0, 0);          //Set print position
-  display.setTextColor(BLACK, WHITE);                 //Set text color to black and background color to white
-  display.println("Scanning for WiFi networks...");    //Write text
-  display.display();                                  //Send everything to display (refresh display)
-
+  container_esp32_inkplate handle(&display);                //Initialize litehtml Container for Inkplate ESP32. Call ONLY ONCE.
   int n = WiFi.scanNetworks();                        //Start searching WiFi networks and put the nubmer of found WiFi networks in variable n
   if (n == 0) {                                       //If you did not find any network, show the message and stop the program.
     display.print("No WiFi networks found!");
