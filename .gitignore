@@ -1,1 +1,8 @@
 build/
+.microbrowser-state
+.microbrowser-state.tmp.*
+managed_components/
+*.mbp
+firmware/sdkconfig
+firmware/dependencies.lock
+firmware/sdkconfig.old*

@@ -1,0 +1,369 @@
+<microbrowser name="Home climate">
+  <state>
+    <field name="temperature" type="f32" value="22.4"/>
+    <field name="target" type="f32" value="21.5"/>
+    <field name="humidity" type="f32" value="46"/>
+    <field name="co2" type="f32" value="642"/>
+    <field name="battery" type="f32" value="3.9"/>
+    <field name="power" type="f32" value="0.8"/>
+    <field name="elapsed" type="f32" value="0"/>
+    <field name="refresh_timer" type="f32" value="0"/>
+    <field name="tick_timer" type="f32" value="0"/>
+    <field name="mode" type="string" value="Auto"/>
+    <field name="room" type="string" value="Living room"/>
+    <field name="status" type="string" value="Local simulation ready"/>
+    <field name="sensor_site" type="string" value="Hall sensor"/>
+    <field name="sensor_online" type="bool" value="true"/>
+    <field name="alerts" type="bool" value="true"/>
+    <field name="diagnostic_json" type="string" value='{"sensor":{"battery":3.9,"connected":true,"site":"Hall sensor"}}'/>
+  </state>
+  <style>
+    .screen { background: #0b111c; color: ink; font-size: 1; padding: 12; gap: 10; width: 100%; height: 100%; }
+    .card { background: #182232; radius: 12; padding: 12; gap: 8; border: #344358; }
+    .row { gap: 8; align: center; }
+    .grow { width: grow; }
+    .title { font-size: 2; color: #e5ecf6; }
+    .muted { color: #8b9bb2; }
+    .reading { font-size: 3; color: #e5ecf6; }
+    .button { background: #344358; color: #e5ecf6; radius: 8; padding: 8; }
+    .primary { background: #46d3b2; color: #0b111c; }
+    .warning { background: #fabe55; color: #0b111c; }
+    .error { color: #fa6872; }
+    .input { background: #0b111c; border: #344358; radius: 8; padding: 8; width: grow; }
+    .slider { width: grow; }
+    .progress { width: grow; height: 8; }
+    .chart { background: #0b111c; radius: 8; height: 120; width: grow; }
+    .status { color: #8b9bb2; width: grow; }
+  </style>
+  <asset name="climate_art" src="assets/climate.png" resize="32x32"/>
+  <asset name="climate_small" src="assets/climate.png" resize="20x20"/>
+
+  <page name="dashboard">
+    <column id="dashboard_root" class="screen" scroll="true" on_load="start_app()">
+      <row id="dashboard_header" class="row">
+        <image id="dashboard_logo" src="climate_art" width="32" height="32" animate="pulse:900"/>
+        <column class="grow">
+          <text class="title" text="Home climate"/>
+          <text class="muted" bind="{state.room}" format="%s"/>
+        </column>
+        <spacer/>
+        <button class="button" text="Details" on_press="open_details()"/>
+        <button class="button primary" text="Settings" on_press="open_settings()"/>
+      </row>
+
+      <column id="overview" class="card" animate="fade:240">
+        <text class="title" text="Thermostat"/>
+        <text class="reading" value="{state.temperature}" format="%.1f °C"/>
+        <text class="muted" bind="{state.status}"/>
+        <row class="row">
+          <button class="button" text="−" on_press="decrease_target()"/>
+          <text value="{state.target}" format="Target %.1f °C"/>
+          <button class="button primary" text="+" on_press="increase_target()"/>
+          <spacer/>
+          <button class="button" text="Auto / Heat" on_press="toggle_mode()"/>
+        </row>
+        <slider id="dashboard_target" class="slider" bind="{state.target}" min="16" max="28" step="0.5" on_change="target_changed()"/>
+        <row class="row">
+          <text class="muted" text="Mode"/>
+          <text value="{state.mode}" format="%s"/>
+          <spacer/>
+          <text class="muted" text="Demand"/>
+          <text value="{state.power}" format="%.2f kW"/>
+        </row>
+        <chart id="trend" class="chart" height="48" min="20" max="24" samples="21.8,22.0,22.1,22.4"/>
+      </column>
+
+      <row id="environment_cards" class="row">
+        <column id="humidity_card" class="card grow">
+          <text class="title" text="Humidity"/>
+          <text value="{state.humidity}" format="%.0f%%"/>
+          <progress class="progress" value="{state.humidity}" min="0" max="100"/>
+          <text class="muted" text="Comfort range 40–60%"/>
+        </column>
+        <column id="air_card" class="card grow">
+          <text class="title" text="Air quality"/>
+          <text value="{state.co2}" format="%.0f ppm CO₂"/>
+          <text class="muted" bind="{state.sensor_site}"/>
+          <image src="climate_small" width="20" height="20" animate="fade"/>
+        </column>
+      </row>
+
+      <column class="card">
+        <text class="title" text="Local sensor simulation"/>
+        <text class="muted" text="No network or external service is used."/>
+        <row class="row">
+          <button class="button primary" text="Refresh snapshot" on_press="schedule_refresh()"/>
+          <button class="button" text="Cancel pending" on_press="cancel_refresh()"/>
+          <button class="button" text="Toggle sensor" on_press="toggle_connection()"/>
+        </row>
+        <text bind="{state.sensor_online}"/>
+      </column>
+    </column>
+  </page>
+
+  <page name="details">
+    <column id="details_root" class="screen" scroll="true" on_load="start_details()">
+      <row class="row">
+        <button class="button" text="Back" on_press="go_back()"/>
+        <text class="title" text="Environment trends"/>
+        <spacer/>
+        <text class="muted" value="{state.elapsed}" format="%.0f s"/>
+      </row>
+      <column class="card" animate="slide:180">
+        <text class="title" text="Temperature history"/>
+        <chart id="trend" class="chart" min="20" max="24" samples="21.2,21.4,21.3,21.6,21.9,22.0,22.2,22.4" animate="fade:200"/>
+        <row class="row">
+          <text class="muted" text="Humidity"/>
+          <text value="{state.humidity}" format="%.0f%%"/>
+          <spacer/>
+          <text class="muted" text="Battery"/>
+          <text value="{state.battery}" format="%.2f V"/>
+        </row>
+      </column>
+      <column id="overview" class="card" animate="pulse">
+        <text class="title" text="Setpoint and energy"/>
+        <text value="{state.target}" format="%.1f °C"/>
+        <slider id="details_target" class="slider" value="{state.target}" min="16" max="28" step="0.5" on-change="target_changed()"/>
+        <text value="{state.power}" format="Estimated %.2f kW"/>
+        <row class="row">
+          <button class="button" text="Target −" on_press="decrease_target()"/>
+          <button class="button primary" text="Target +" on_press="increase_target()"/>
+          <button class="button" text="Save setpoint" on_press="save_target()"/>
+        </row>
+      </column>
+      <column class="card">
+        <text class="title" text="Air quality"/>
+        <progress class="progress" bind="{state.co2}" min="0" max="1600" style="height: 10;"/>
+        <text value="{state.co2}" format="%.0f ppm"/>
+        <button class="button primary" text="Sample offline sensor" on_press="schedule_refresh()"/>
+      </column>
+    </column>
+  </page>
+
+  <page name="settings">
+    <column id="settings_root" class="screen" scroll="true" on_load="start_settings()">
+      <row class="row">
+        <button class="button" text="Back" on_press="go_back()"/>
+        <text class="title" text="Climate settings"/>
+      </row>
+      <column class="card">
+        <text class="title" text="Room"/>
+        <input id="room_input" class="input" bind="{state.room}" placeholder="Room name" max-length="32" on_change="room_changed()" on_submit="save_room()"/>
+        <text bind="{state.room}" format="%s" style="color: #5ca5fa;" color="#8b9bb2"/>
+        <row class="row">
+          <button class="button primary" text="Save room" on_press="save_room()"/>
+          <button class="button" text="Use Hall" on_press="use_hall()"/>
+        </row>
+      </column>
+      <column class="card">
+        <text class="title" text="Alerts and persistence"/>
+        <text bind="{state.alerts}"/>
+        <button class="button warning" text="High-CO₂ alerts" on_press="toggle_alerts()"/>
+        <text class="muted" text="Setpoint, room, mode, and alert selection are restored on launch."/>
+        <button class="button primary" text="Save current configuration" on_press="save_all()"/>
+        <button class="button" text="Run local selftest" on_press="selftest()"/>
+      </column>
+      <stack height="56">
+        <view class="card" x="4" y="4"/>
+        <row class="row" x="0" y="0">
+          <text class="status" bind="{state.status}"/>
+          <button class="button" text="Stop timers" on_press="stop_timers()"/>
+        </row>
+      </stack>
+    </column>
+  </page>
+
+  <script><![CDATA[
+    fn sanitize_target(value) {
+      let bounded = clamp(value, 16, 28);
+      return round(bounded * 2) / 2;
+    }
+
+    fn room_length() {
+      return len(state.room);
+    }
+
+    fn update_preview() {
+      state.status = "Setpoint " + string(state.target) + " °C";
+      animate("overview", "scale", 1.02, 120);
+    }
+
+    fn target_changed() {
+      state.target = sanitize_target(state.target);
+      update_preview();
+    }
+
+    fn decrease_target() {
+      state.target = sanitize_target(state.target - 0.5);
+      update_preview();
+    }
+
+    fn increase_target() {
+      state.target = sanitize_target(state.target + 0.5);
+      update_preview();
+    }
+
+    fn save_target() {
+      save_number("thermostat.target", state.target);
+      state.status = "Setpoint saved";
+      log("thermostat setpoint saved");
+    }
+
+    fn save_room() {
+      save_string("thermostat.room", state.room);
+      state.status = "Room name saved (" + string(room_length()) + " characters)";
+      log("room setting saved");
+    }
+
+    fn use_hall() {
+      state.room = "Hall";
+      save_room();
+    }
+
+    fn room_changed() {
+      state.status = "Room name edited";
+    }
+
+    fn toggle_alerts() {
+      state.alerts = !state.alerts;
+      save_bool("thermostat.alerts", state.alerts);
+      state.status = "Alert preference saved";
+    }
+
+    fn toggle_connection() {
+      state.sensor_online = !state.sensor_online;
+      save_bool("sensor.online", state.sensor_online);
+      state.status = "Offline sensor state changed";
+    }
+
+    fn toggle_mode() {
+      if (state.mode == "Auto") {
+        state.mode = "Heat";
+      } else {
+        state.mode = "Auto";
+      }
+      save_string("thermostat.mode", state.mode);
+      state.status = "Mode set to " + state.mode;
+      if (state.power < 0.25) {
+        animate("overview", "opacity", 0.85, 100);
+      }
+    }
+
+    fn refresh_sensors() {
+      state.refresh_timer = 0;
+      state.humidity = clamp(state.humidity + sin(state.elapsed / 5), 35, 65);
+      state.co2 = max(420, min(1200, state.co2 + cos(state.elapsed / 7) * 12));
+      state.battery = json_number(state.diagnostic_json, "sensor.battery");
+      state.battery = floor(state.battery * 100) / 100;
+      state.sensor_site = json_string(state.diagnostic_json, "sensor.site");
+      state.sensor_online = json_bool(state.diagnostic_json, "sensor.connected");
+      state.power = round(abs(state.target - state.temperature) * 100) / 250;
+      chart_push("trend", state.temperature);
+      animate("trend", "offset_y", 0, 120);
+      state.status = "Offline snapshot updated";
+      log("offline sensor snapshot updated");
+    }
+
+    fn tick() {
+      state.elapsed = state.elapsed + 1;
+      if (state.mode == "Heat") {
+        state.temperature = state.temperature + 0.01;
+      } else {
+        state.temperature = state.temperature + (state.target - state.temperature) * 0.01;
+      }
+      if (state.elapsed == 5 || state.elapsed == 15 || state.elapsed == 30 || state.elapsed == 60) {
+        chart_push("trend", state.temperature);
+      }
+    }
+
+    fn schedule_refresh() {
+      if (state.refresh_timer > 0) {
+        cancel(state.refresh_timer);
+      }
+      state.refresh_timer = after(150, "refresh_sensors");
+      state.status = "Offline sample scheduled";
+    }
+
+    fn cancel_refresh() {
+      if (state.refresh_timer > 0) {
+        cancel(state.refresh_timer);
+      }
+      state.refresh_timer = 0;
+      state.status = "Pending sample cancelled";
+    }
+
+    fn stop_timers() {
+      if (state.refresh_timer > 0) {
+        cancel(state.refresh_timer);
+      }
+      if (state.tick_timer > 0) {
+        cancel(state.tick_timer);
+      }
+      state.refresh_timer = 0;
+      state.tick_timer = 0;
+      state.status = "Timers stopped";
+    }
+
+    fn selftest() {
+      let high = sanitize_target(100);
+      let low = sanitize_target(-100);
+      let midpoint = sanitize_target(22.25);
+      let passed = high == 28 && low == 16 && midpoint == 22.5;
+      if (passed) {
+        state.status = "Local selftest passed";
+        log("dashboard local selftest passed");
+      } else {
+        state.status = "Local selftest failed";
+        log("dashboard local selftest failed");
+      }
+    }
+
+    fn save_all() {
+      save_target();
+      save_room();
+      save_bool("thermostat.alerts", state.alerts);
+      save_string("thermostat.mode", state.mode);
+      state.status = "Configuration saved on this device";
+    }
+
+    fn start_app() {
+      let restored_target = load_number("thermostat.target", state.target);
+      let restored_room = load_string("thermostat.room", state.room);
+      let restored_mode = load_string("thermostat.mode", state.mode);
+      let restored_alerts = load_bool("thermostat.alerts", state.alerts);
+      let restored_online = load_bool("sensor.online", state.sensor_online);
+      state.target = sanitize_target(restored_target);
+      state.room = restored_room;
+      state.mode = restored_mode;
+      state.alerts = restored_alerts;
+      state.sensor_online = restored_online;
+      if (state.tick_timer > 0) {
+        cancel(state.tick_timer);
+      }
+      state.tick_timer = every(1000, "tick");
+      state.status = "Local settings restored";
+      log("climate dashboard started without network access");
+    }
+
+    fn start_details() {
+      log("environment details opened");
+    }
+
+    fn start_settings() {
+      state.status = "Settings remain on this device";
+    }
+
+    fn open_details() {
+      go("details");
+    }
+
+    fn open_settings() {
+      stop_timers();
+      go("settings");
+    }
+
+    fn go_back() {
+      back();
+    }
+  ]]></script>
+</microbrowser>

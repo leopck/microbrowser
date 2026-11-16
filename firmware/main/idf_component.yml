@@ -1,0 +1,6 @@
+version: "1.0.0"
+dependencies:
+  idf:
+    version: ">=6.1.1,<7.0"
+  espressif/esp_lcd_qemu_rgb:
+    version: "^1.0.2"

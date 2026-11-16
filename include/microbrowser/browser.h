@@ -1,0 +1,159 @@
+#pragma once
+
+#include "microbrowser/package.h"
+#include "microbrowser/platform.h"
+#include "microbrowser/types.h"
+#include "microbrowser/vm.h"
+
+#include <array>
+#include <span>
+
+namespace mb {
+
+enum class Key : uint8_t { backspace, enter, left, right, home, end_key, escape, toggle_stats };
+
+struct Metrics {
+    uint64_t frames = 0;
+    uint64_t scripts = 0;
+    uint64_t flushed_pixels = 0;
+    uint64_t layout_count = 0;
+    uint64_t last_layout_us = 0;
+    uint64_t last_render_us = 0;
+    uint64_t package_bytes = 0;
+    uint32_t node_count = 0;
+    uint32_t active_requests = 0;
+    uint32_t state_count = 0;
+};
+
+struct Damage {
+    static constexpr std::size_t capacity = 32;
+    std::array<Rect, capacity> regions{};
+    std::size_t count = 0;
+};
+
+class Browser final : private VmHost {
+public:
+    Browser(Platform& platform, Size size);
+    void load(std::vector<uint8_t> bytes);
+    void resize(Size size);
+
+    // tick is called by the application loop. true means damage() must be presented.
+    bool tick();
+    [[nodiscard]] const uint16_t* pixels() const { return m_pixels.data(); }
+    [[nodiscard]] Size screen_size() const { return m_size; }
+    [[nodiscard]] const Damage& damage() const { return m_frame_damage; }
+    [[nodiscard]] std::string_view page_name() const;
+    [[nodiscard]] std::string_view last_error() const { return m_error; }
+    [[nodiscard]] const Metrics& metrics() const { return m_metrics; }
+
+    void pointer_down(int x, int y);
+    void pointer_move(int x, int y);
+    void pointer_up(int x, int y);
+    void scroll(int delta);
+    void key(Key key);
+    void text_input(std::string_view utf8);
+    // Used by headless interaction tests and embedded application integration.
+    void dispatch(std::string_view function_name);
+
+private:
+    struct Animation {
+        enum class Property : uint8_t { none, scale, opacity, offset_y };
+        Property property = Property::none;
+        uint64_t started = 0;
+        uint64_t duration = 0;
+        float from = 0;
+        float target = 0;
+    };
+
+    struct Timer {
+        uint32_t id = 0;
+        uint32_t function = 0;
+        uint64_t due = 0;
+        uint64_t interval = 0;
+        bool active = false;
+        bool repeating = false;
+    };
+
+    struct PendingRequest {
+        uint32_t id = 0;
+        uint32_t state = no_index;
+        std::string json_path;
+        Value::Type expected_type = Value::Type::string;
+        bool json_request = false;
+        bool active = false;
+    };
+
+    using Navigation = NavigationSignal;
+    std::size_t m_cursor_byte = 0;
+    int m_pointer_x = -1;
+    int m_pointer_y = -1;
+
+    Platform& m_platform;
+    Size m_size;
+    Package m_package;
+    std::vector<Value> m_state;
+    std::vector<uint16_t> m_pixels;
+    std::vector<Rect> m_pending_regions;
+    Damage m_frame_damage{};
+    Page* m_page = nullptr;
+    Node* m_focus = nullptr;
+    Node* m_pointer_target = nullptr;
+    Node* m_scroll_target = nullptr;
+    int m_scroll_start_y = 0;
+    float m_scroll_origin = 0.0F;
+    std::array<uint32_t, 16> m_history{};
+    uint32_t m_history_size = 0;
+    std::array<Timer, 16> m_timers{};
+    std::array<PendingRequest, 8> m_requests{};
+    Metrics m_metrics{};
+    std::string m_error;
+    uint64_t m_error_until = 0;
+    uint64_t m_next_blink = 0;
+    uint64_t m_last_paint = 0;
+    uint64_t m_next_id = 1;
+    uint64_t m_started = 0;
+    uint32_t m_generations = 0;
+    uint32_t m_invocations = 0;
+    bool m_layout_dirty = true;
+    bool m_pointer_down = false;
+    bool m_scroll_dragging = false;
+    bool m_show_keyboard = false;
+    bool m_cursor_visible = true;
+    bool m_show_stats = false;
+    bool m_full_repaint = true;
+    bool m_in_script = false;
+    bool m_page_loaded = false;
+
+    Value read_state(uint32_t index) const override;
+    void write_state(uint32_t index, const Value& value) override;
+    Value builtin(uint8_t id, std::span<const Value> arguments) override;
+
+    void invalidate(Rect area);
+    void invalidate(const Node& node);
+    void invalidate_layout();
+    void consume_regions();
+    void start_animations();
+    void animate_node(Node& node, Animation::Property property, float target, uint64_t duration);
+    bool advance_animations(uint64_t now);
+    void advance_timers(uint64_t now);
+    void poll_network();
+    void perform_layout();
+    void paint();
+    Node* hit_test(int x, int y);
+    void edit_value(Node& node, float x_normalized);
+    void cancel_pointer_gesture();
+    void apply_scroll_drag();
+    void changed(Node& node);
+    void open_page(std::string_view name, bool remember);
+    void open_page_index(uint32_t page, bool remember);
+    void invoke(uint32_t function);
+    void handle_error(std::string_view message);
+    Node* find_node(std::string_view id);
+    uint32_t find_function(std::string_view name) const;
+    uint32_t find_state(std::string_view name) const;
+
+    friend struct Layout;
+    friend struct Painter;
+};
+
+} // namespace mb

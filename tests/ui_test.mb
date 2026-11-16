@@ -1,0 +1,45 @@
+<microbrowser name="Interaction test">
+  <state>
+    <field name="target" type="f32" value="20"/>
+    <field name="name" type="string" value="abc"/>
+    <field name="counter" type="f32" value="0"/>
+    <field name="temperature" type="f32" value="0"/>
+  </state>
+  <page name="main">
+    <stack width="320" height="240">
+      <button id="increment" text="+" position="absolute" x="8" y="8" width="88" height="28" background="#286060" border="#55aaaaaa" radius="4" on_press="increment()" />
+      <button text="Settings" position="absolute" x="108" y="8" width="100" height="28" background="#304966" border="#8888aaaa" radius="4" on_press="go_settings()" />
+      <text id="title" text="{state.target}" format="%.0f C" position="absolute" x="8" y="44" width="240" height="20" color="#e5ecf6" />
+      <slider bind="{state.target}" min="0" max="100" step="5" position="absolute" x="8" y="72" width="240" height="22" color="#46d3b2" />
+      <input bind="{state.name}" placeholder="Room" max-length="16" on_submit="save_name()" position="absolute" x="8" y="104" width="240" height="26" font-size="2" border="#46546f" />
+      <chart id="chart" samples="10,40,30,70" min="0" max="100" position="absolute" x="8" y="140" width="220" height="64" color="#46d3b2" background="#182232" />
+    </stack>
+  </page>
+  <page name="settings">
+    <stack width="320" height="240">
+      <text text="SETTINGS" position="absolute" x="8" y="8" width="240" height="24" color="#e5ecf6" font-size="2" />
+      <button text="Back" position="absolute" x="8" y="48" width="100" height="28" background="#286060" on_press="go_back()" />
+    </stack>
+  </page>
+  <script><![CDATA[
+    fn increment() { state.target = state.target + 5; }
+    fn go_settings() { go("settings"); }
+    fn go_back() { back(); }
+    fn start_timer() { every(20, "tick"); }
+    fn tick() {
+      let i = 0;
+      while (i < 2) {
+        state.counter = state.counter + 1;
+        i = i + 1;
+      }
+      if (state.counter >= 2) { chart_push("chart", state.target); }
+    }
+    fn save_name() { save_string("room_name", state.name); }
+    fn save_target() { save_number("target", state.target); }
+    fn checkpoint() { save_number("checkpoint", state.target); }
+    fn load_target() { state.target = load_number("target", 20); }
+    fn fetch_target() { fetch_json("http://example.test/data", "current.temperature", "target"); }
+    fn fade() { animate("title", "opacity", 0.0, 20); }
+    fn push_chart() { chart_push("chart", state.target); }
+  ]]></script>
+</microbrowser>

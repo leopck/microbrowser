@@ -1,0 +1,11 @@
+menu "Microbrowser"
+
+config MB_QEMU_ETHERNET
+    bool "Use QEMU OpenCores Ethernet"
+    default y
+    select ETH_USE_OPENETH
+    help
+        Initialize the virtual OpenCores Ethernet device provided by Espressif
+        QEMU. QEMU does not emulate Wi-Fi; this is a real lwIP Ethernet path.
+
+endmenu

@@ -1,0 +1,23 @@
+wait 600
+shot build/dashboard-main.ppm
+call open_details
+wait 250
+call refresh_sensors
+shot build/dashboard-details.ppm
+call go_back
+wait 100
+call open_settings
+wait 100
+click 120 118
+text !
+shot build/dashboard-input.ppm
+key escape
+wait 40
+down 400 240
+move 400 40
+up 400 40
+click 240 217
+shot build/dashboard-settings.ppm
+key stats
+wait 250
+shot build/dashboard-performance.ppm
