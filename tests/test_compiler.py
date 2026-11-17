@@ -421,7 +421,7 @@ class UiAndPackageTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(inspected.returncode, 0, inspected.stderr)
-            self.assertIn("Version: 1.0", inspected.stdout)
+            self.assertIn("Version: 2.0", inspected.stdout)
             self.assertIn("home", inspected.stdout)
             self.assertIn("[0] start", inspected.stdout)
 
@@ -481,6 +481,23 @@ class ValidationTests(unittest.TestCase):
         self.assert_invalid(source(states=fields), "exceeds 256")
         self.assert_invalid(source('<slider bind="{state.n}" step="0"/>', states=field("n", "f32", "1")), "greater than zero")
         self.assert_invalid(source('<text text="x" width="101%"/>'), "0 through 100")
+
+    def test_page_property_bounds_match_runtime_validation(self) -> None:
+        for markup, message in (
+            ('<column width="16385"/>', "between 0 and 16384"),
+            ('<column padding="257"/>', "between 0 and 256"),
+            ('<column gap="257"/>', "between 0 and 256"),
+            ('<column radius="257"/>', "between 0 and 256"),
+            ('<column x="16385"/>', "between -16384 and 16384"),
+            ('<column y="-16385"/>', "between -16384 and 16384"),
+            ('<column animate="fade:60001"/>', "duration must be 1..60000"),
+        ):
+            with self.subTest(markup=markup):
+                self.assert_invalid(source(markup), message)
+        self.assert_invalid(source('<column id="' + "x" * 129 + '"/>'), "id exceeds 128 bytes")
+
+        package = build(source('<column animate="pulse:000060" x="-16384" y="16384" width="16384"/>'))
+        self.assertEqual(package.pages[0].root.properties["animate"].value, "pulse:60")
 
     def test_child_cardinality_and_page_depth_limits_are_enforced(self) -> None:
         children = "<text/>" * 65

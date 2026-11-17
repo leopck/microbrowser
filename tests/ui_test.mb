@@ -11,20 +11,30 @@
       <button text="Settings" position="absolute" x="108" y="8" width="100" height="28" background="#304966" border="#8888aaaa" radius="4" on_press="go_settings()" />
       <text id="title" text="{state.target}" format="%.0f C" position="absolute" x="8" y="44" width="240" height="20" color="#e5ecf6" />
       <slider bind="{state.target}" min="0" max="100" step="5" position="absolute" x="8" y="72" width="240" height="22" color="#46d3b2" />
-      <input bind="{state.name}" placeholder="Room" max-length="16" on_submit="save_name()" position="absolute" x="8" y="104" width="240" height="26" font-size="2" border="#46546f" />
+      <input bind="{state.name}" placeholder="Room" max-length="16" on_submit="save_name()" position="absolute" x="8" y="104" width="240" height="26" font-size="14" border="#46546f" />
       <chart id="chart" samples="10,40,30,70" min="0" max="100" position="absolute" x="8" y="140" width="220" height="64" color="#46d3b2" background="#182232" />
     </stack>
   </page>
   <page name="settings">
     <stack width="320" height="240">
-      <text text="SETTINGS" position="absolute" x="8" y="8" width="240" height="24" color="#e5ecf6" font-size="2" />
+      <text text="SETTINGS" position="absolute" x="8" y="8" width="240" height="24" color="#e5ecf6" font-size="14" font-weight="600" />
       <button text="Back" position="absolute" x="8" y="48" width="100" height="28" background="#286060" on_press="go_back()" />
+    </stack>
+  </page>
+  <page name="grow">
+    <stack>
+      <row width="240" height="80" background="#FFFFFF">
+        <text text="Home climate" font-size="20" font-weight="600" width="grow" />
+        <spacer />
+        <button text="Settings" width="72" height="44" background="#E9EDF5" color="#3730A3" />
+      </row>
     </stack>
   </page>
   <script><![CDATA[
     fn increment() { state.target = state.target + 5; }
     fn go_settings() { go("settings"); }
     fn go_back() { back(); }
+    fn show_grow() { go("grow"); }
     fn start_timer() { every(20, "tick"); }
     fn tick() {
       let i = 0;

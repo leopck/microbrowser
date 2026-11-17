@@ -23,7 +23,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 extern const uint8_t dashboard_mbp_start[] asm("_binary_dashboard_mbp_start");
@@ -40,8 +39,9 @@ struct TouchPoint {
 };
 constexpr TouchPoint kScrollFrom{400, 240};
 constexpr TouchPoint kScrollTo{400, 40};
-constexpr TouchPoint kSelftestButtonCenter{240, 217};
-constexpr TouchPoint kSelftestButtonPixel{40, 215};
+constexpr int kUpwardDragsToBottom = 4;
+constexpr TouchPoint kSelftestButtonCenter{240, 120};
+constexpr TouchPoint kSelftestButtonPixel{40, 112};
 constexpr std::size_t kMaximumCommandBytes = 96;
 constexpr std::size_t kMaximumUartBytesPerPoll = 64;
 constexpr uint32_t kApplicationPeriodMs = 10;
@@ -176,15 +176,17 @@ void selftest_invoke(mb::Browser& browser, QemuDisplay& display, std::string_vie
 }
 
 void selftest_drag_to_bottom(mb::Browser& browser, QemuDisplay& display) {
-    browser.pointer_down(kScrollFrom.x, kScrollFrom.y);
-    browser.pointer_move(kScrollTo.x, kScrollTo.y);
-    browser.pointer_up(kScrollTo.x, kScrollTo.y);
-    if (!render_once(browser, display)) throw std::runtime_error("drag scrolling did not paint a frame");
+    for (int drag = 0; drag < kUpwardDragsToBottom; ++drag) {
+        browser.pointer_down(kScrollFrom.x, kScrollFrom.y);
+        browser.pointer_move(kScrollTo.x, kScrollTo.y);
+        browser.pointer_up(kScrollTo.x, kScrollTo.y);
+        if (!render_once(browser, display)) throw std::runtime_error("drag scrolling did not paint a frame");
+    }
 
     const std::size_t pixel_index = std::size_t(kSelftestButtonPixel.y) * std::size_t(kScreenSize.width) +
         std::size_t(kSelftestButtonPixel.x);
     const uint16_t actual = browser.pixels()[pixel_index];
-    if (actual != mb::to_rgb565(mb::palette::border)) {
+    if (actual != mb::to_rgb565(mb::Color::rgb(0xe9, 0xed, 0xf5))) {
         throw std::runtime_error("drag scrolling did not expose the self-test button");
     }
 

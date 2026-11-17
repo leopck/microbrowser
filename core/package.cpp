@@ -1,6 +1,8 @@
 #include "microbrowser/package.h"
 
-#include <algorithm>
+#include "fonts.h"
+
+#include <utility>
 #include <array>
 #include <bit>
 #include <charconv>
@@ -640,8 +642,15 @@ bool apply_common_property(Node& node, const Property& property, ByteReader& rea
         node.style.padding = integer_property(property, 0, std::numeric_limits<int>::max(), reader);
     } else if (name == "gap") {
         node.style.gap = integer_property(property, 0, std::numeric_limits<int>::max(), reader);
-    } else if (name == "font-size") {
-        node.style.font_size = integer_property(property, 1, std::numeric_limits<int>::max(), reader);
+    } else if (name == "font-size" || name == "font-weight") {
+        const int value = integer_property(property, 0, std::numeric_limits<int>::max(), reader);
+        const int pixel_size = name == "font-size" ? value : node.style.font_size;
+        const int weight = name == "font-weight" ? value : node.style.font_weight;
+        if (!fonts::face_exists(pixel_size, weight)) {
+            reader.fail_at(property.offset, "unsupported font size or weight");
+        }
+        if (name == "font-size") node.style.font_size = value;
+        else node.style.font_weight = value;
     } else if (name == "radius") {
         node.style.radius = integer_property(property, 0, std::numeric_limits<int>::max(), reader);
     } else if (name == "x") {
@@ -890,14 +899,11 @@ void parse_samples(Node& node, const Property& property, ByteReader& reader) {
 }
 
 void apply_special_property(Node& node, const Property& property, ByteReader& reader) {
-    if (node.kind == NodeKind::chart && property.name == "samples") {
+    if (node.kind == NodeKind::chart) {
         parse_samples(node, property, reader);
-    } else if (node.kind == NodeKind::image && property.name == "src") {
+    } else {
         require_property_kind(property, PropertyKind::string, reader);
         node.source = property.string;
-    } else {
-        reader.fail_at(property.offset, "property '" + std::string(property.name) +
-                                            "' is not valid for this element kind");
     }
 }
 
@@ -1091,7 +1097,7 @@ Package parse_package(const std::vector<uint8_t>& bytes) {
         header.read_u8() != 'K') {
         throw PackageError("package magic is not MBPK");
     }
-    if (header.read_u16() != 1) {
+    if (header.read_u16() != 2) {
         throw PackageError("unsupported package major version");
     }
     if (header.read_u16() != 0) {

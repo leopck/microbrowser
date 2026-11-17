@@ -1,5 +1,6 @@
 #include "microbrowser/browser.h"
 #include "layout.h"
+#include "fonts.h"
 #include "paint.h"
 #include "microbrowser/canvas.h"
 #include "microbrowser/json.h"
@@ -7,7 +8,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <limits>
 
 namespace mb {
 namespace {
@@ -35,7 +35,7 @@ void validate_tree(const Package& package, const Node& node, uint32_t& count, ui
     if (node.id.size() > 128) throw PackageError("element id exceeds 128 bytes");
     if (node.style.padding < 0 || node.style.padding > 256 || node.style.gap < 0 ||
         node.style.gap > 256 || node.style.radius < 0 || node.style.radius > 256 ||
-        node.style.font_size < 1 || node.style.font_size > 8) {
+        !fonts::face_exists(node.style.font_size, node.style.font_weight)) {
         throw PackageError("element paint metrics are outside their limits");
     }
     for (Length length : {node.style.width, node.style.height}) {
@@ -158,10 +158,8 @@ void Browser::open_page_index(uint32_t index, bool remember) {
     m_cursor_byte = 0;
     m_cursor_visible = true;
     m_next_blink = m_platform.now_ms() + 500;
-    ++m_generations;
     invalidate_layout();
     start_animations();
-    m_page_loaded = true;
     if (m_page->root.on_load != no_index) invoke(m_page->root.on_load);
 }
 
@@ -223,12 +221,10 @@ void Browser::invoke(uint32_t function) {
     }
     ++m_invocations;
     ++m_metrics.scripts;
-    m_in_script = true;
     struct Restore {
         uint32_t& invocations;
-        bool& in_script;
-        ~Restore() { --invocations; in_script = invocations != 0; }
-    } restore{m_invocations, m_in_script};
+        ~Restore() { --invocations; }
+    } restore{m_invocations};
     try {
         execute_script(m_package, function, {}, *this);
     } catch (const Navigation&) {

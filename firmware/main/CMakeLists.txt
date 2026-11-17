@@ -13,6 +13,10 @@ idf_component_register(
         "${MICROBROWSER_ROOT}/core/vm.cpp"
         "${MICROBROWSER_ROOT}/core/layout.cpp"
         "${MICROBROWSER_ROOT}/core/canvas.cpp"
+        "${MICROBROWSER_ROOT}/core/font_data.cpp"
+        "${MICROBROWSER_ROOT}/core/fonts.cpp"
+        "${MICROBROWSER_ROOT}/core/input.cpp"
+        "${MICROBROWSER_ROOT}/core/text_layout.cpp"
         "${MICROBROWSER_ROOT}/core/json.cpp"
         "${MICROBROWSER_ROOT}/core/types.cpp"
     INCLUDE_DIRS

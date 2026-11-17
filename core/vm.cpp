@@ -370,26 +370,6 @@ void validate_package_for_execution(const Package& package) {
     }
 }
 
-Value make_number(float number) {
-    Value result;
-    result.type = Value::Type::number;
-    result.number = number;
-    return result;
-}
-
-
-Value make_boolean(bool boolean) {
-    Value result;
-    result.type = Value::Type::boolean;
-    result.boolean = boolean;
-    return result;
-}
-
-Value make_void() {
-    Value result;
-    result.type = Value::Type::void_value;
-    return result;
-}
 
 struct Frame {
     const Function* function = nullptr;
@@ -479,7 +459,7 @@ Value make_numeric_result(float number, const Function& function, std::size_t pc
     if (!std::isfinite(number)) {
         fail(function, pc, std::string(operation) + " produced a non-finite number");
     }
-    return make_number(number);
+    return Value::from_number(number);
 }
 
 Value evaluate_add(Value left, Value right, const Function& function, std::size_t pc) {
@@ -509,13 +489,13 @@ Value evaluate_binary_numeric(Opcode opcode, const Value& left, const Value& rig
         }
         return make_numeric_result(left.number / right.number, function, pc, "DIVIDE");
     case Opcode::less:
-        return make_boolean(left.number < right.number);
+        return Value::from_bool(left.number < right.number);
     case Opcode::less_equal:
-        return make_boolean(left.number <= right.number);
+        return Value::from_bool(left.number <= right.number);
     case Opcode::greater:
-        return make_boolean(left.number > right.number);
+        return Value::from_bool(left.number > right.number);
     case Opcode::greater_equal:
-        return make_boolean(left.number >= right.number);
+        return Value::from_bool(left.number >= right.number);
     default:
         fail(function, pc, "internal numeric opcode mismatch");
     }
@@ -540,12 +520,12 @@ Value evaluate_equality(Opcode opcode, const Value& left, const Value& right,
     case Value::Type::void_value:
         fail(function, pc, "equality does not accept void operands");
     }
-    return make_boolean(opcode == Opcode::equal ? equal : !equal);
+    return Value::from_bool(opcode == Opcode::equal ? equal : !equal);
 }
 
 Value finish_return(std::vector<Frame>& frames) {
     Frame& frame = frames.back();
-    Value result = frame.operands.empty() ? make_void() : pop_operand(frame, frame.pc);
+    Value result = frame.operands.empty() ? Value::from_void() : pop_operand(frame, frame.pc);
     frames.pop_back();
     return result;
 }
@@ -584,7 +564,7 @@ Value execute_script(const Package& package, uint32_t function_id,
             push_operand(frame, function.constants[instruction.index], pc);
             break;
         case Opcode::push_bool:
-            push_operand(frame, make_boolean(instruction.immediate != 0), pc);
+            push_operand(frame, Value::from_bool(instruction.immediate != 0), pc);
             break;
         case Opcode::load_state:
             push_operand(frame, read_host_state(host, instruction.index, package, function, pc), pc);
@@ -653,7 +633,7 @@ Value execute_script(const Package& package, uint32_t function_id,
             if (value.type != Value::Type::boolean) {
                 fail(function, pc, "NOT requires a boolean");
             }
-            push_operand(frame, make_boolean(!value.boolean), pc);
+            push_operand(frame, Value::from_bool(!value.boolean), pc);
             break;
         }
         case Opcode::jump:

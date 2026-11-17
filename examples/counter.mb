@@ -1,0 +1,151 @@
+<microbrowser name="Counter">
+  <state>
+    <field name="value" type="f32" value="0"/>
+    <field name="step" type="f32" value="1"/>
+    <field name="enabled" type="bool" value="true"/>
+    <field name="name" type="string" value="Workshop"/>
+    <field name="status" type="string" value="Ready"/>
+    <field name="initialized" type="bool" value="false"/>
+  </state>
+
+  <style>
+    .screen { padding: 14; gap: 14; background: background; }
+    .toolbar { gap: 8; }
+    .title { font-size: 20; font-weight: 600; }
+    .card { background: white; radius: 12; padding: 16; gap: 12; }
+    .section-title { font-size: 16; font-weight: 600; }
+    .muted { color: muted; }
+    .reading { font-size: 36; font-weight: 600; color: accent; }
+    .actions { gap: 8; }
+    .button { background: #E9EDF5; border: border; color: ink; font-weight: 600; height: 42; padding: 6; radius: 8; }
+    .primary { background: blue; border: blue; color: white; }
+    .field { height: 42; }
+  </style>
+
+  <page name="home">
+    <column class="screen" scroll="true" on_load="start()">
+      <row class="toolbar">
+        <text class="title" text="Counter"/>
+        <spacer/>
+        <button class="button" text="Settings" on_press="open_settings()"/>
+      </row>
+      <column class="card" animate="fade:180">
+        <text class="muted" bind="{state.name}"/>
+        <text id="reading" class="reading" bind="{state.value}" format="%.0f" width="100%" height="48"/>
+        <progress bind="{state.value}" min="0" max="100" height="12"/>
+        <row class="actions">
+          <button class="button" text="−" width="grow" on_press="decrease()"/>
+          <button class="button primary" text="+" width="grow" on_press="increase()"/>
+          <button class="button" text="Reset" width="grow" on_press="reset()"/>
+        </row>
+      </column>
+      <row class="actions">
+        <button class="button" text="Pause / resume" on_press="toggle_pause()"/>
+        <text class="muted" bind="{state.status}" width="100%" height="20"/>
+      </row>
+    </column>
+  </page>
+
+  <page name="settings">
+    <column class="screen" scroll="true">
+      <row class="toolbar">
+        <button class="button" text="← Back" on_press="go_back()"/>
+        <text class="title" text="Settings"/>
+      </row>
+      <column class="card">
+        <text class="section-title" text="Location"/>
+        <input class="field" bind="{state.name}" placeholder="Name" max-length="24"
+               on_change="name_changed()" on_submit="save_settings()"/>
+        <button class="button" text="Restore saved settings" on_press="restore_saved()"/>
+      </column>
+      <column class="card">
+        <text class="section-title" text="Counting step"/>
+        <text bind="{state.step}" format="%.1f" height="20"/>
+        <slider class="field" bind="{state.step}" min="1" max="10" step="1" on_change="step_changed()"/>
+        <button class="button primary" text="Save settings" on_press="save_settings()"/>
+      </column>
+      <button class="button" text="Back" on_press="go_back()"/>
+    </column>
+  </page>
+
+  <script><![CDATA[
+    fn start() {
+      if (!state.initialized) {
+        load_saved();
+        state.initialized = true;
+      }
+    }
+
+    fn change_value(delta) {
+      if (!state.enabled) {
+        state.status = "Resume counting first";
+        return;
+      }
+      let next = state.value + delta * state.step;
+      state.value = clamp(next, 0, 100);
+      state.status = "Value: " + string(state.value);
+    }
+    fn increase() {
+      change_value(1);
+    }
+
+    fn decrease() {
+      change_value(-1);
+    }
+
+    fn reset() {
+      state.value = 0;
+      state.status = "Counter reset";
+    }
+
+    fn toggle_pause() {
+      state.enabled = !state.enabled;
+      if (state.enabled) {
+        state.status = "Counting enabled";
+      } else {
+        state.status = "Counting paused";
+      }
+    }
+
+    fn step_changed() {
+      state.step = clamp(round(state.step), 1, 10);
+      state.status = "Step: " + string(state.step);
+    }
+
+    fn name_changed() {
+      state.status = "Name edited";
+    }
+
+    fn save_settings() {
+      save_number("counter.value", state.value);
+      save_number("counter.step", state.step);
+      save_bool("counter.enabled", state.enabled);
+      save_string("counter.name", state.name);
+      state.status = "Settings saved";
+    }
+
+    fn restore_saved() {
+      load_saved();
+      state.status = "Saved settings restored";
+    }
+
+    fn load_saved() {
+      state.value = load_number("counter.value", state.value);
+      state.step = load_number("counter.step", state.step);
+      state.enabled = load_bool("counter.enabled", state.enabled);
+      state.name = load_string("counter.name", state.name);
+    }
+
+    fn open_settings() {
+      go("settings");
+    }
+
+    fn go_back() {
+      back();
+    }
+
+    fn report() {
+      log("Counter value: " + string(state.value));
+    }
+  ]]></script>
+</microbrowser>

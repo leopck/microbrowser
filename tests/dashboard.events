@@ -8,7 +8,7 @@ call go_back
 wait 100
 call open_settings
 wait 100
-click 120 118
+click 240 165
 text !
 shot build/dashboard-input.ppm
 key escape
@@ -16,8 +16,18 @@ wait 40
 down 400 240
 move 400 40
 up 400 40
-click 240 217
+down 400 240
+move 400 40
+up 400 40
+down 400 240
+move 400 40
+up 400 40
+down 400 240
+move 400 40
+up 400 40
 shot build/dashboard-settings.ppm
+click 240 120
+shot build/dashboard-selftest.ppm
 key stats
 wait 250
 shot build/dashboard-performance.ppm

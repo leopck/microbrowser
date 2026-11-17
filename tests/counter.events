@@ -1,0 +1,10 @@
+wait 200
+click 225 221
+click 225 221
+click 80 221
+click 440 35
+call save_settings
+call go_back
+call report
+wait 200
+shot build/counter.ppm

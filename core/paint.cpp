@@ -1,5 +1,7 @@
 #include "paint.h"
 
+#include "input.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -7,32 +9,11 @@
 namespace mb {
 namespace {
 
-struct TextWindow {
-    std::string_view text;
-    int caret_pixels = 0;
-};
-
-std::size_t advance_codepoints(std::string_view text, std::size_t offset, int count) {
-    for (int index = 0; index < count && offset < text.size(); ++index) {
-        offset += next_utf8(text, offset).length;
-    }
-    return offset;
-}
-
-TextWindow input_window(const std::string& value, std::size_t caret_byte, int capacity, int font_size) {
-    const int total = static_cast<int>(std::count_if(value.begin(), value.end(), [](char ch) {
-        return (static_cast<unsigned char>(ch) & 0xc0U) != 0x80U;
-    }));
-    const std::size_t caret = std::min(caret_byte, value.size());
-    int before_caret = 0;
-    for (std::size_t offset = 0; offset < caret;) {
-        offset += next_utf8(value, offset).length;
-        ++before_caret;
-    }
-    const int skip = std::max(0, std::max(before_caret + 1 - capacity, total - capacity));
-    const std::size_t begin = advance_codepoints(value, 0, skip);
-    const std::string_view shown = std::string_view(value).substr(begin);
-    return {shown, Canvas::text_width(std::string_view(value).substr(begin, caret - begin), font_size)};
+Color pressed_color(Color color) {
+    constexpr unsigned scale = 224;
+    return Color::rgba(uint8_t(unsigned(color.red()) * scale / 255U),
+                       uint8_t(unsigned(color.green()) * scale / 255U),
+                       uint8_t(unsigned(color.blue()) * scale / 255U), color.alpha());
 }
 
 } // namespace
@@ -44,17 +25,19 @@ Rect visual_bounds(const Node& node) {
             node.box.y + (node.box.height - height) / 2 + int(node.offset_y), width, height};
 }
 
-void Painter::content_box(const Node& node, Rect area, float number, Color color, uint8_t opacity, Rect clip) {
+void Painter::content_box(const Node& node, Rect area, float number, Color color,
+                          uint8_t opacity, Rect clip) {
     const float fraction = node.maximum > node.minimum
         ? std::clamp((number - node.minimum) / (node.maximum - node.minimum), 0.0F, 1.0F) : 0.0F;
-    canvas.fill_rounded(area, node.style.radius, palette::border, opacity, clip);
+    const int radius = node.kind == NodeKind::slider ? area.height / 2 : node.style.radius;
+    canvas.fill_rounded(area, radius, palette::border, opacity, clip);
     canvas.fill_rounded({area.x, area.y, int(area.width * fraction), area.height},
-                        node.style.radius, color, opacity, clip);
+                        radius, color, opacity, clip);
 }
 
 void Painter::chart(const Node& node, Rect area, uint8_t opacity, Rect clip) {
     canvas.fill_rounded(area, node.style.radius, node.style.background, opacity, clip);
-    canvas.stroke(area, palette::border, opacity, clip);
+    canvas.stroke_rounded(area, node.style.radius, palette::border, opacity, clip);
     const Rect plot = area.clipped(clip);
     if (plot.empty()) return;
     for (int row = 1; row < 4; ++row) {
@@ -79,6 +62,53 @@ void Painter::chart(const Node& node, Rect area, uint8_t opacity, Rect clip) {
     }
 }
 
+void Painter::button(const Node& node, Rect area, uint8_t opacity, Rect clip) {
+    const auto& style = node.style;
+    const bool pressed = &node == browser.m_pointer_target && browser.m_pointer_down;
+    const Color background = pressed ? pressed_color(style.background) : style.background;
+    canvas.fill_rounded(area, style.radius, background, opacity, clip);
+    canvas.stroke_rounded(area, style.radius, style.border, opacity, clip);
+    const int width = Canvas::text_width(node.text, style.font_size, style.font_weight);
+    canvas.text(area.x + std::max(style.padding, (area.width - width) / 2),
+                area.y + (area.height - Canvas::text_height(style.font_size, style.font_weight)) / 2,
+                node.text, style.font_size, style.foreground, opacity, clip, style.font_weight);
+}
+
+void Painter::input(const Node& node, Rect area, uint8_t opacity, Rect clip) {
+    const auto& style = node.style;
+    const bool focused = &node == browser.m_focus;
+    const Color background = style.background.alpha() == 0 ? palette::surface : style.background;
+    canvas.fill_rounded(area, style.radius, background, opacity, clip);
+    canvas.stroke_rounded(area, style.radius, focused ? palette::blue : style.border, opacity, clip);
+    const std::string_view value = browser.m_state[node.binding].string;
+    const TextWindow window = input_window(value, browser.m_cursor_byte,
+        std::max(0, area.width - 16), style.font_size, style.font_weight);
+    const std::string_view shown = value.empty() ? std::string_view(node.placeholder) : window.text;
+    const Color foreground = value.empty() ? palette::muted : style.foreground;
+    const Rect text_clip = area.clipped(clip);
+    const int text_height = Canvas::text_height(style.font_size, style.font_weight);
+    canvas.text(area.x + 8, area.y + (area.height - text_height) / 2, shown,
+                style.font_size, foreground, opacity, text_clip, style.font_weight);
+    if (focused && browser.m_cursor_visible && area.width > 18) {
+        const int x = std::min(area.x + 8 + window.caret_pixels, area.x + area.width - 5);
+        const int y = area.y + std::max(4, (area.height - text_height) / 2);
+        canvas.fill({x, y, 2, std::min(text_height, area.height - 8)}, palette::blue, opacity, text_clip);
+    }
+}
+
+void Painter::text(const Node& node, Rect area, uint8_t opacity, Rect clip) {
+    std::array<char, 512> buffer{};
+    const std::string_view content = node.binding == no_index ? std::string_view(node.text)
+        : format_value(browser.m_state[node.binding], node.format, buffer);
+    const auto& style = node.style;
+    Rect text_area{area.x + style.padding, area.y + style.padding,
+                   std::max(0, area.width - 2 * style.padding),
+                   std::max(0, area.height - 2 * style.padding)};
+    const Size text_size = Canvas::wrapped_text_size(content, text_area.width, style.font_size, style.font_weight);
+    text_area.y += std::max(0, (text_area.height - text_size.height) / 2);
+    canvas.paragraph(text_area, content, style.font_size, style.foreground, opacity, clip, style.font_weight);
+}
+
 void Painter::draw(const Node& node, uint8_t parent_opacity, Rect clip) {
     if (clip.empty()) return;
     const float rounded_opacity = std::clamp(node.opacity, 0.0F, 1.0F) * parent_opacity + 0.5F;
@@ -86,13 +116,7 @@ void Painter::draw(const Node& node, uint8_t parent_opacity, Rect clip) {
     if (opacity == 0) return;
     const Rect area = visual_bounds(node);
     if (node.kind == NodeKind::button) {
-        const bool pressed = &node == browser.m_pointer_target && browser.m_pointer_down;
-        canvas.fill_rounded(area, node.style.radius, pressed ? palette::accent : node.style.background, opacity, clip);
-        canvas.stroke(area, node.style.border, opacity, clip);
-        const int text_width = Canvas::text_width(node.text, node.style.font_size);
-        canvas.text(area.x + std::max(node.style.padding, (area.width - text_width) / 2),
-                    area.y + (area.height - Canvas::text_height(node.style.font_size)) / 2,
-                    node.text, node.style.font_size, palette::ink, opacity, clip);
+        button(node, area, opacity, clip);
         return;
     }
     if (node.kind == NodeKind::image) {
@@ -103,20 +127,7 @@ void Painter::draw(const Node& node, uint8_t parent_opacity, Rect clip) {
         return;
     }
     if (node.kind == NodeKind::input) {
-        canvas.fill_rounded(area, node.style.radius, palette::background, opacity, clip);
-        const bool focused = &node == browser.m_focus;
-        canvas.stroke(area, focused ? palette::accent : node.style.border, opacity, clip);
-        const int capacity = std::max(0, (area.width - 16) / (6 * node.style.font_size));
-        const TextWindow window = input_window(browser.m_state[node.binding].string, browser.m_cursor_byte,
-                                               capacity, node.style.font_size);
-        const std::string_view shown = window.text.empty()
-            ? std::string_view(node.placeholder) : window.text;
-        canvas.text(area.x + 8, area.y + (area.height - 7 * node.style.font_size) / 2, shown,
-                    node.style.font_size, window.text.empty() ? palette::muted : node.style.foreground, opacity, clip);
-        if (focused && browser.m_cursor_visible && area.width > 18) {
-            const int x = std::min(area.x + 8 + window.caret_pixels, area.x + area.width - 5);
-            canvas.fill({x, area.y + 6, 2, std::max(1, area.height - 12)}, palette::accent, opacity, clip);
-        }
+        input(node, area, opacity, clip);
         return;
     }
     if (node.kind == NodeKind::slider) {
@@ -126,8 +137,9 @@ void Painter::draw(const Node& node, uint8_t parent_opacity, Rect clip) {
         const float fraction = node.maximum > node.minimum
             ? std::clamp((value - node.minimum) / (node.maximum - node.minimum), 0.0F, 1.0F) : 0.0F;
         const int center = track.x + int(track.width * fraction);
-        canvas.fill_rounded({center - 6, area.y + (area.height - 16) / 2, 12, 16}, 6,
-                            palette::white, opacity, clip);
+        const Rect thumb{center - 7, area.y + (area.height - 18) / 2, 14, 18};
+        canvas.fill_rounded(thumb, 7, palette::white, opacity, clip);
+        canvas.stroke_rounded(thumb, 7, node.style.foreground, opacity, clip);
         return;
     }
     if (node.kind == NodeKind::progress) {
@@ -139,17 +151,22 @@ void Painter::draw(const Node& node, uint8_t parent_opacity, Rect clip) {
         return;
     }
     canvas.fill_rounded(area, node.style.radius, node.style.background, opacity, clip);
-    if (node.style.border.alpha() != 0) canvas.stroke(area, node.style.border, opacity, clip);
-    if (node.kind == NodeKind::text) {
-        std::array<char, 512> buffer{};
-        const std::string_view content = node.binding == no_index ? std::string_view(node.text)
-            : format_value(browser.m_state[node.binding], node.format, buffer);
-        const int y = area.y + node.style.padding +
-            std::max(0, (area.height - 2 * node.style.padding - Canvas::text_height(node.style.font_size)) / 2);
-        canvas.text(area.x + node.style.padding, y, content, node.style.font_size,
-                    node.style.foreground, opacity, clip);
-    }
+    if (node.style.border.alpha() != 0) canvas.stroke_rounded(area, node.style.radius, node.style.border, opacity, clip);
+    if (node.kind == NodeKind::text) text(node, area, opacity, clip);
     draw_children(node, opacity, clip);
+    if (node.style.scroll && node.scroll_max > 0) scrollbar(node, area, opacity, clip);
+}
+
+void Painter::scrollbar(const Node& node, Rect area, uint8_t opacity, Rect clip) {
+    if (node.kind == NodeKind::row || !node.style.scroll || node.scroll_max <= 0) return;
+    const Rect track{area.x + area.width - 2, area.y, 2, area.height};
+    canvas.fill(track, palette::border, opacity / 2, clip);
+    const int height = std::max(18, int(int64_t(area.height) * area.height /
+        (area.height + int(node.scroll_max))));
+    const float progress = std::clamp(node.scroll / node.scroll_max, 0.0F, 1.0F);
+    const int offset = int(progress * float(area.height - height));
+    canvas.fill_rounded({area.x + area.width - 3, area.y + offset, 3, height}, 2,
+                        palette::muted, opacity, clip);
 }
 
 void Painter::run(Rect clip) {

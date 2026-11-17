@@ -1,6 +1,7 @@
 #include "microbrowser/browser.h"
 #include "microbrowser/canvas.h"
 #include "microbrowser/json.h"
+#include "../core/input.h"
 
 #include <algorithm>
 #include <array>
@@ -194,12 +195,82 @@ void test_package_geometry(const std::vector<uint8_t>& bytes) {
     reject_property(height_property, height_id, -1.0F);
     reject_property(width_property, package_string_id(package, "x"), -16'385.0F);
     reject_property(width_property, package_string_id(package, "y"), 16'385.0F);
+    reject_property(width_property, package_string_id(package, "font-size"), 13.0F);
+    reject_property(width_property, package_string_id(package, "font-weight"), 500.0F);
 
     auto zero_width = bytes;
     set_number_property(zero_width, width_property, width_id, 0.0F);
     const auto accepted = mb::parse_package(zero_width);
     CHECK(accepted.pages.front().root.style.width.kind == mb::LengthKind::fixed);
     CHECK(accepted.pages.front().root.style.width.value == 0.0F);
+}
+
+bool non_background_pixels(const mb::Browser& browser, mb::Rect area, uint16_t background) {
+    const mb::Rect bounds = area.clipped({0, 0, browser.screen_size().width, browser.screen_size().height});
+    for (int y = bounds.y; y < bounds.y + bounds.height; ++y) {
+        for (int x = bounds.x; x < bounds.x + bounds.width; ++x) {
+            if (browser.pixels()[std::size_t(y) * std::size_t(browser.screen_size().width) +
+                                 std::size_t(x)] != background) return true;
+        }
+    }
+    return false;
+}
+
+void test_grow_header_unwraps_title(mb::Browser& browser) {
+    browser.dispatch("show_grow");
+    REQUIRE(browser.tick());
+    const uint16_t background = mb::to_rgb565(mb::palette::white);
+    CHECK(!non_background_pixels(browser, {0, 0, 100, 26}, background));
+    CHECK(non_background_pixels(browser, {0, 30, 100, 16}, background));
+    browser.dispatch("go_back");
+    REQUIRE(browser.tick());
+    CHECK(browser.page_name() == "main");
+}
+
+void test_font_metrics_and_rounding() {
+    CHECK(mb::Canvas::text_width("ii", 14) < mb::Canvas::text_width("WW", 14));
+    CHECK(mb::Canvas::text_width("AV", 14) <
+          mb::Canvas::text_width("A", 14) + mb::Canvas::text_width("V", 14));
+    const int wrap_width = mb::Canvas::text_width("one", 14) + 1;
+    CHECK(mb::Canvas::wrapped_text_size("one two", wrap_width, 14).height ==
+          2 * mb::Canvas::text_height(14));
+
+    constexpr int width = 40;
+    constexpr int height = 32;
+    std::array<uint16_t, width * height> pixels{};
+    const uint16_t background = mb::to_rgb565(mb::palette::white);
+    pixels.fill(background);
+    mb::Canvas canvas(pixels.data(), {width, height});
+    canvas.text(1, 2, "e", 14, mb::palette::ink, 255, {});
+    bool has_text = false;
+    bool has_antialiasing = false;
+    const uint16_t ink = mb::to_rgb565(mb::palette::ink);
+    for (const uint16_t pixel : pixels) {
+        has_text = has_text || pixel != background;
+        has_antialiasing = has_antialiasing || (pixel != background && pixel != ink);
+    }
+    CHECK(has_text);
+    CHECK(has_antialiasing);
+
+    pixels.fill(background);
+    canvas.fill_rounded({4, 4, 24, 16}, 8, mb::palette::blue, 255, {});
+    CHECK(pixels[4 * width + 4] == background);
+    CHECK(pixels[8 * width + 16] == mb::to_rgb565(mb::palette::blue));
+    canvas.stroke_rounded({4, 4, 24, 16}, 8, mb::palette::ink, 255, {});
+    CHECK(pixels[4 * width + 4] == background);
+    CHECK(pixels[4 * width + 16] == ink);
+    CHECK(pixels[8 * width + 16] == mb::to_rgb565(mb::palette::blue));
+
+    const mb::TextWindow first = mb::input_window("iiiiWWWW", 0, 24, 14, 400);
+    CHECK(first.begin_byte == 0);
+    CHECK(first.caret_pixels == 0);
+    CHECK(!first.text.empty());
+    const mb::TextWindow last = mb::input_window("WWWWiiii", 8, 32, 14, 400);
+    CHECK(last.begin_byte > 0);
+    CHECK(last.caret_pixels <= 32);
+    CHECK(mb::caret_byte_at_x(last.text, 0, 14, 400) == 0);
+    CHECK(mb::caret_byte_at_x("\xc2\xb0", 0, 14, 400) == 0);
+    CHECK(mb::caret_byte_at_x("\xc2\xb0", 999, 14, 400) == 2);
 }
 
 void test_canvas_image_clip() {
@@ -236,9 +307,8 @@ uint16_t dashboard_pixel(const mb::Browser& browser, int x, int y) {
 }
 
 void check_dashboard_pixels(const mb::Browser& browser) {
-    CHECK(dashboard_pixel(browser, 52, 18) == mb::to_rgb565(mb::palette::ink));
-    CHECK(dashboard_pixel(browser, 400, 70) == mb::to_rgb565(mb::palette::surface));
-    CHECK(dashboard_pixel(browser, 24, 85) == mb::to_rgb565(mb::palette::ink));
+    CHECK(dashboard_pixel(browser, 12, 68) == mb::to_rgb565(mb::Color::rgb(0xf1, 0xf4, 0xf9)));
+    CHECK(dashboard_pixel(browser, 40, 74) == mb::to_rgb565(mb::palette::surface));
 }
 
 
@@ -251,8 +321,8 @@ void test_dashboard_layout(mb::Browser& browser, TestPlatform& platform) {
     platform.advance(250);
     REQUIRE(browser.tick());
     CHECK(browser.page_name() == "details");
-    CHECK(dashboard_pixel(browser, 400, 50) == mb::to_rgb565(mb::palette::surface));
-    CHECK(dashboard_pixel(browser, 24, 66) == mb::to_rgb565(mb::palette::ink));
+    CHECK(dashboard_pixel(browser, 12, 68) == mb::to_rgb565(mb::Color::rgb(0xf1, 0xf4, 0xf9)));
+    CHECK(dashboard_pixel(browser, 40, 74) == mb::to_rgb565(mb::palette::surface));
 
     browser.dispatch("go_back");
     platform.advance(600);
@@ -266,8 +336,10 @@ void test_settings_scroll(mb::Browser& browser, TestPlatform& platform) {
     REQUIRE(browser.tick());
     browser.scroll(-256);
     REQUIRE(browser.tick());
-    click(browser, 240, 217);
-    CHECK(std::find(platform.logs.begin(), platform.logs.end(), "dashboard local selftest passed") != platform.logs.end());
+    const std::size_t logs_before = platform.logs.size();
+    click(browser, 240, 120);
+    REQUIRE(platform.logs.size() == logs_before + 1);
+    CHECK(platform.logs.back() == "dashboard local selftest passed");
 
     browser.dispatch("go_back");
     REQUIRE(browser.tick());
@@ -276,10 +348,14 @@ void test_settings_scroll(mb::Browser& browser, TestPlatform& platform) {
 void test_scroll_drag(mb::Browser& browser, TestPlatform& platform) {
     browser.dispatch("open_settings");
     REQUIRE(browser.tick());
-    drag_to(browser, 400, 240, 40);
-    REQUIRE(browser.tick());
-    click(browser, 240, 217);
-    CHECK(std::find(platform.logs.begin(), platform.logs.end(), "dashboard local selftest passed") != platform.logs.end());
+    for (int drag = 0; drag < 4; ++drag) {
+        drag_to(browser, 400, 240, 40);
+        REQUIRE(browser.tick());
+    }
+    const std::size_t logs_before = platform.logs.size();
+    click(browser, 240, 120);
+    REQUIRE(platform.logs.size() == logs_before + 1);
+    CHECK(platform.logs.back() == "dashboard local selftest passed");
 
     browser.scroll(256);
     REQUIRE(browser.tick());
@@ -297,9 +373,9 @@ void test_scroll_drag(mb::Browser& browser, TestPlatform& platform) {
 }
 
 void test_slider_drag(mb::Browser& browser, TestPlatform& platform) {
-    browser.pointer_down(220, 225);
-    browser.pointer_move(320, 80);
-    browser.pointer_up(320, 80);
+    browser.pointer_down(220, 246);
+    browser.pointer_move(325, 80);
+    browser.pointer_up(325, 80);
     browser.dispatch("save_target");
     CHECK(platform.values.at("thermostat.target").number == 24.5F);
 }
@@ -312,7 +388,7 @@ void test_ui(const char* package_path) {
     browser.load(bytes);
     REQUIRE(browser.tick());
     CHECK(browser.page_name() == "main");
-    CHECK(browser.metrics().node_count == 10);
+    CHECK(browser.metrics().node_count == 15);
     const uint64_t main_pixels = fingerprint(browser);
     CHECK(main_pixels != 0);
     std::vector<uint8_t> corrupt = bytes;
@@ -365,6 +441,7 @@ void test_ui(const char* package_path) {
     browser.key(mb::Key::backspace);
     browser.key(mb::Key::enter);
     REQUIRE(browser.tick());
+    test_grow_header_unwraps_title(browser);
     REQUIRE(platform.values.at("room_name").string == "abdc");
 
     browser.dispatch("start_timer");
@@ -466,6 +543,7 @@ int main(int argc, char** argv) {
         test_ui(argv[2]);
         test_vm_and_json();
         test_canvas_image_clip();
+        test_font_metrics_and_rounding();
         test_integer_formatting();
     } catch (const std::exception& error) {
         std::cerr << "FATAL: " << error.what() << '\n';

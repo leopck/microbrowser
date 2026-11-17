@@ -143,13 +143,11 @@ void Browser::pointer_down(int x, int y) {
     }
     if (target->kind == NodeKind::input) {
         if (m_focus == target) {
-            const int character = std::clamp((x - target->box.x - 8) / (6 * target->style.font_size),
-                0, int(character_count(m_state[target->binding].string)));
-            std::size_t cursor = 0;
-            for (int index = 0; index < character; ++index) {
-                cursor += next_utf8(m_state[target->binding].string, cursor).length;
-            }
-            m_cursor_byte = cursor;
+            const std::string& value = m_state[target->binding].string;
+            const TextWindow window = input_window(value, m_cursor_byte,
+                std::max(0, target->box.width - 16), target->style.font_size, target->style.font_weight);
+            m_cursor_byte = window.begin_byte + caret_byte_at_x(window.text, x - target->box.x - 8,
+                target->style.font_size, target->style.font_weight);
         } else {
             m_cursor_byte = m_state[target->binding].string.size();
         }
@@ -212,7 +210,7 @@ void Browser::scroll(int delta) {
 void Browser::key(Key pressed) {
     if (pressed == Key::toggle_stats) {
         m_show_stats = !m_show_stats;
-        invalidate({std::max(0, m_size.width - 184), 4, std::min(184, m_size.width), 58});
+        invalidate(metrics_bounds(m_size));
         return;
     }
     if (pressed == Key::escape) {

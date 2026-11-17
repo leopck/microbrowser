@@ -39,7 +39,6 @@ class _Header:
     height: int
     depth: int
     color_type: int
-    interlace: int
 
 
 def _chunks(data: bytes) -> list[tuple[bytes, bytes]]:
@@ -90,7 +89,7 @@ def _header(chunks: list[tuple[bytes, bytes]]) -> _Header:
         raise PngError("unsupported PNG compression or filter method")
     if interlace != 0:
         raise PngError("interlaced PNG is not supported")
-    return _Header(width, height, depth, color_type, interlace)
+    return _Header(width, height, depth, color_type)
 
 
 def _metadata(

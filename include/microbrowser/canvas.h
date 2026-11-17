@@ -18,16 +18,24 @@ public:
     void fill_rounded(Rect rectangle, int radius, Color color, uint8_t opacity, Rect clip);
     void stroke(Rect rectangle, Color color, uint8_t opacity, Rect clip);
     void line(int x0, int y0, int x1, int y1, Color color, uint8_t opacity, Rect clip);
-    void text(int x, int y, std::string_view utf8, int scale, Color color, uint8_t opacity, Rect clip);
+    void text(int x, int y, std::string_view utf8, int font_size, Color color,
+              uint8_t opacity, Rect clip, int font_weight = 400);
+    void paragraph(Rect area, std::string_view utf8, int font_size, Color color,
+                   uint8_t opacity, Rect clip, int font_weight = 400);
     void image(Rect target, const Asset& asset, uint8_t opacity, Rect clip);
-    [[nodiscard]] static int text_width(std::string_view utf8, int scale);
-    [[nodiscard]] static int text_height(int scale) { return 7 * scale; }
+    void stroke_rounded(Rect rectangle, int radius, Color color, uint8_t opacity, Rect clip);
+    [[nodiscard]] static int text_width(std::string_view utf8, int font_size, int font_weight = 400);
+    [[nodiscard]] static int text_height(int font_size, int font_weight = 400);
+    [[nodiscard]] static Size wrapped_text_size(std::string_view utf8, int max_width,
+                                                 int font_size, int font_weight = 400);
 
 private:
     uint16_t* m_pixels;
     Size m_size;
 
     void pixel(int x, int y, Color color, uint8_t opacity, Rect clip);
+
+    void coverage(Rect area, std::span<const uint8_t> data, Color color, uint8_t opacity, Rect clip);
 };
 
 // Decodes a well-formed codepoint. Invalid bytes are rendered as '?'.

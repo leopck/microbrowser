@@ -7,6 +7,7 @@
 
 #include <array>
 #include <span>
+#include <string_view>
 
 namespace mb {
 
@@ -58,11 +59,6 @@ public:
 private:
     struct Animation {
         enum class Property : uint8_t { none, scale, opacity, offset_y };
-        Property property = Property::none;
-        uint64_t started = 0;
-        uint64_t duration = 0;
-        float from = 0;
-        float target = 0;
     };
 
     struct Timer {
@@ -111,8 +107,6 @@ private:
     uint64_t m_next_blink = 0;
     uint64_t m_last_paint = 0;
     uint64_t m_next_id = 1;
-    uint64_t m_started = 0;
-    uint32_t m_generations = 0;
     uint32_t m_invocations = 0;
     bool m_layout_dirty = true;
     bool m_pointer_down = false;
@@ -121,8 +115,6 @@ private:
     bool m_cursor_visible = true;
     bool m_show_stats = false;
     bool m_full_repaint = true;
-    bool m_in_script = false;
-    bool m_page_loaded = false;
 
     Value read_state(uint32_t index) const override;
     void write_state(uint32_t index, const Value& value) override;

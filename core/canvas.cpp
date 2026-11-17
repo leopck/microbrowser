@@ -1,5 +1,8 @@
 #include "microbrowser/canvas.h"
 
+#include "fonts.h"
+#include "text_layout.h"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -13,65 +16,24 @@
 namespace mb {
 namespace {
 
-using Glyph = std::array<uint8_t, 5>;
-constexpr std::array<Glyph, 95> glyphs{{
-    {0x00,0x00,0x00,0x00,0x00}, {0x00,0x00,0x5f,0x00,0x00},
-    {0x00,0x07,0x00,0x07,0x00}, {0x14,0x7f,0x14,0x7f,0x14},
-    {0x24,0x2a,0x7f,0x2a,0x12}, {0x23,0x13,0x08,0x64,0x62},
-    {0x36,0x49,0x55,0x22,0x50}, {0x00,0x05,0x03,0x00,0x00},
-    {0x00,0x1c,0x22,0x41,0x00}, {0x00,0x41,0x22,0x1c,0x00},
-    {0x14,0x08,0x3e,0x08,0x14}, {0x08,0x08,0x3e,0x08,0x08},
-    {0x00,0x50,0x30,0x00,0x00}, {0x08,0x08,0x08,0x08,0x08},
-    {0x00,0x60,0x60,0x00,0x00}, {0x20,0x10,0x08,0x04,0x02},
-    {0x3e,0x51,0x49,0x45,0x3e}, {0x00,0x42,0x7f,0x40,0x00},
-    {0x42,0x61,0x51,0x49,0x46}, {0x21,0x41,0x45,0x4b,0x31},
-    {0x18,0x14,0x12,0x7f,0x10}, {0x27,0x45,0x45,0x45,0x39},
-    {0x3c,0x4a,0x49,0x49,0x30}, {0x01,0x71,0x09,0x05,0x03},
-    {0x36,0x49,0x49,0x49,0x36}, {0x06,0x49,0x49,0x29,0x1e},
-    {0x00,0x36,0x36,0x00,0x00}, {0x00,0x56,0x36,0x00,0x00},
-    {0x08,0x14,0x22,0x41,0x00}, {0x14,0x14,0x14,0x14,0x14},
-    {0x00,0x41,0x22,0x14,0x08}, {0x02,0x01,0x51,0x09,0x06},
-    {0x32,0x49,0x79,0x41,0x3e}, {0x7e,0x11,0x11,0x11,0x7e},
-    {0x7f,0x49,0x49,0x49,0x36}, {0x3e,0x41,0x41,0x41,0x22},
-    {0x7f,0x41,0x41,0x22,0x1c}, {0x7f,0x49,0x49,0x49,0x41},
-    {0x7f,0x09,0x09,0x09,0x01}, {0x3e,0x41,0x49,0x49,0x7a},
-    {0x7f,0x08,0x08,0x08,0x7f}, {0x00,0x41,0x7f,0x41,0x00},
-    {0x20,0x40,0x41,0x3f,0x01}, {0x7f,0x08,0x14,0x22,0x41},
-    {0x7f,0x40,0x40,0x40,0x40}, {0x7f,0x02,0x0c,0x02,0x7f},
-    {0x7f,0x04,0x08,0x10,0x7f}, {0x3e,0x41,0x41,0x41,0x3e},
-    {0x7f,0x09,0x09,0x09,0x06}, {0x3e,0x41,0x51,0x21,0x5e},
-    {0x7f,0x09,0x19,0x29,0x46}, {0x46,0x49,0x49,0x49,0x31},
-    {0x01,0x01,0x7f,0x01,0x01}, {0x3f,0x40,0x40,0x40,0x3f},
-    {0x1f,0x20,0x40,0x20,0x1f}, {0x3f,0x40,0x38,0x40,0x3f},
-    {0x63,0x14,0x08,0x14,0x63}, {0x07,0x08,0x70,0x08,0x07},
-    {0x61,0x51,0x49,0x45,0x43}, {0x00,0x7f,0x41,0x41,0x00},
-    {0x02,0x04,0x08,0x10,0x20}, {0x00,0x41,0x41,0x7f,0x00},
-    {0x04,0x02,0x01,0x02,0x04}, {0x40,0x40,0x40,0x40,0x40},
-    {0x00,0x01,0x02,0x04,0x00}, {0x20,0x54,0x54,0x54,0x78},
-    {0x7f,0x48,0x44,0x44,0x38}, {0x38,0x44,0x44,0x44,0x20},
-    {0x38,0x44,0x44,0x48,0x7f}, {0x38,0x54,0x54,0x54,0x18},
-    {0x08,0x7e,0x09,0x01,0x02}, {0x0c,0x52,0x52,0x52,0x3e},
-    {0x7f,0x08,0x04,0x04,0x78}, {0x00,0x44,0x7d,0x40,0x00},
-    {0x20,0x40,0x44,0x3d,0x00}, {0x7f,0x10,0x28,0x44,0x00},
-    {0x00,0x41,0x7f,0x40,0x00}, {0x7c,0x04,0x18,0x04,0x78},
-    {0x7c,0x08,0x04,0x04,0x78}, {0x38,0x44,0x44,0x44,0x38},
-    {0x7c,0x14,0x14,0x14,0x08}, {0x08,0x14,0x14,0x18,0x7c},
-    {0x7c,0x08,0x04,0x04,0x08}, {0x48,0x54,0x54,0x54,0x20},
-    {0x04,0x3f,0x44,0x40,0x20}, {0x3c,0x40,0x40,0x20,0x7c},
-    {0x1c,0x20,0x40,0x20,0x1c}, {0x3c,0x40,0x30,0x40,0x3c},
-    {0x44,0x28,0x10,0x28,0x44}, {0x0c,0x50,0x50,0x50,0x3c},
-    {0x44,0x64,0x54,0x4c,0x44}, {0x00,0x08,0x36,0x41,0x00},
-    {0x00,0x00,0x7f,0x00,0x00}, {0x00,0x41,0x36,0x08,0x00},
-    {0x10,0x08,0x08,0x10,0x08},
-}};
+constexpr std::array<uint8_t, 16> coverage_alpha{
+    0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255,
+};
 
-constexpr Glyph degree_glyph{0x00, 0x06, 0x09, 0x06, 0x00};
+int corner_inset(int radius, int relative_y, int height) {
+    if (relative_y < radius) {
+        const int dy = radius - relative_y - 1;
+        for (int inset = 0; inset < radius; ++inset) {
+            if ((radius - inset - 1) * (radius - inset - 1) + dy * dy < radius * radius) return inset;
+        }
+        return radius;
+    }
+    if (relative_y < height - radius) return 0;
+    return corner_inset(radius, height - relative_y - 1, height);
+}
 
-Glyph glyph_for(uint32_t codepoint) {
-    if (codepoint == 0xb0) return degree_glyph;
-    if (codepoint == 0x2212) codepoint = '-';
-    if (codepoint >= 0x20 && codepoint <= 0x7e) return glyphs[codepoint - 0x20];
-    return glyphs['?' - 0x20];
+int bounded_radius(Rect rectangle, int radius) {
+    return std::max(0, std::min(radius, std::min(rectangle.width, rectangle.height) / 2));
 }
 
 void append_text(std::span<char> output, std::size_t& used, std::string_view text) {
@@ -198,25 +160,38 @@ void Canvas::fill(Rect rectangle, Color color, uint8_t opacity, Rect clip) {
 void Canvas::fill_rounded(Rect rectangle, int radius, Color color, uint8_t opacity, Rect clip) {
     const Rect screen{0, 0, m_size.width, m_size.height};
     const Rect bounds = rectangle.clipped(clip.empty() ? screen : clip).clipped(screen);
-    if (bounds.empty()) return;
-    radius = std::max(0, std::min(radius, std::min(rectangle.width, rectangle.height) / 2));
+    if (bounds.empty() || color.alpha() == 0 || opacity == 0) return;
+    radius = bounded_radius(rectangle, radius);
     for (int y = bounds.y; y < bounds.y + bounds.height; ++y) {
-        int inset = 0;
+        const int inset = corner_inset(radius, y - rectangle.y, rectangle.height);
+        fill({rectangle.x + inset, y, rectangle.width - inset * 2, 1}, color, opacity, bounds);
+    }
+}
+
+void Canvas::stroke_rounded(Rect rectangle, int radius, Color color, uint8_t opacity, Rect clip) {
+    const Rect screen{0, 0, m_size.width, m_size.height};
+    const Rect bounds = rectangle.clipped(clip.empty() ? screen : clip).clipped(screen);
+    if (bounds.empty() || color.alpha() == 0 || opacity == 0) return;
+    radius = bounded_radius(rectangle, radius);
+    if (radius == 0 || rectangle.width < 3 || rectangle.height < 3) {
+        stroke(rectangle, color, opacity, bounds);
+        return;
+    }
+    int previous = radius;
+    if (bounds.y > rectangle.y) {
+        previous = corner_inset(radius, bounds.y - rectangle.y - 1, rectangle.height);
+    }
+    for (int y = bounds.y; y < bounds.y + bounds.height; ++y) {
         const int relative_y = y - rectangle.y;
-        if (relative_y < radius) {
-            const int dy = radius - relative_y - 1;
-            while (inset < radius && (radius - inset - 1) * (radius - inset - 1) + dy * dy >= radius * radius) ++inset;
-        } else if (relative_y >= rectangle.height - radius) {
-            const int dy = relative_y - (rectangle.height - radius);
-            while (inset < radius && (radius - inset - 1) * (radius - inset - 1) + dy * dy >= radius * radius) ++inset;
+        const int inset = corner_inset(radius, relative_y, rectangle.height);
+        const int near = std::min(previous, inset);
+        const int far = std::max(previous, inset);
+        fill({rectangle.x + near, y, far - near + 1, 1}, color, opacity, bounds);
+        fill({rectangle.x + rectangle.width - far - 1, y, far - near + 1, 1}, color, opacity, bounds);
+        if (relative_y == 0 || relative_y == rectangle.height - 1) {
+            fill({rectangle.x + radius, y, rectangle.width - 2 * radius, 1}, color, opacity, bounds);
         }
-        Rect left{bounds.x, y, inset, 1};
-        Rect right{rectangle.x + rectangle.width - inset, y,
-                   bounds.x + bounds.width - (rectangle.x + rectangle.width - inset), 1};
-        if (right.width < 0) right.width = 0;
-        fill(Rect{left.x, y, std::max(0, std::min(inset, rectangle.x + radius - left.x)), 1}, color, opacity, bounds);
-        fill(Rect{rectangle.x + inset, y, rectangle.width - inset * 2, 1}, color, opacity, bounds);
-        fill(right, color, opacity, bounds);
+        previous = inset;
     }
 }
 
@@ -244,32 +219,85 @@ void Canvas::line(int x0, int y0, int x1, int y1, Color color, uint8_t opacity, 
     }
 }
 
-void Canvas::text(int x, int y, std::string_view utf8, int scale, Color color, uint8_t opacity, Rect clip) {
-    if (clip.empty()) clip = {0, 0, m_size.width, m_size.height};
-    scale = std::clamp(scale, 1, 8);
-    for (std::size_t offset = 0; offset < utf8.size();) {
-        const auto character = next_utf8(utf8, offset);
-        offset += character.length;
-        const Glyph glyph = glyph_for(character.codepoint);
-        for (int column = 0; column < 5; ++column) {
-            for (int row = 0; row < 7; ++row) {
-                if ((glyph[column] & (1U << row)) != 0) {
-                    fill({x + column * scale, y + row * scale, scale, scale}, color, opacity, clip);
-                }
-            }
+void Canvas::coverage(Rect area, std::span<const uint8_t> data, Color color,
+                      uint8_t opacity, Rect clip) {
+    const Rect screen{0, 0, m_size.width, m_size.height};
+    const Rect bounds = area.clipped(clip.empty() ? screen : clip).clipped(screen);
+    if (bounds.empty() || opacity == 0 || color.alpha() == 0) return;
+    const int row_bytes = (area.width + 1) / 2;
+    for (int y = bounds.y; y < bounds.y + bounds.height; ++y) {
+        const uint8_t* row = data.data() + std::size_t(y - area.y) * row_bytes;
+        for (int x = bounds.x; x < bounds.x + bounds.width; ++x) {
+            const std::size_t packed = std::size_t(x - area.x) / 2;
+            const uint8_t byte = row[packed];
+            const uint8_t value = (x - area.x) % 2 == 0 ? byte >> 4U : byte & 0x0fU;
+            if (value == 0) continue;
+            pixel(x, y, color, coverage_alpha[value], clip.empty() ? screen : clip);
         }
-        x += 6 * scale;
     }
 }
 
-int Canvas::text_width(std::string_view utf8, int scale) {
-    int count = 0;
+void Canvas::text(int x, int y, std::string_view utf8, int font_size, Color color,
+                  uint8_t opacity, Rect clip, int font_weight) {
+    const fonts::Face& face = fonts::face_for(font_size, font_weight);
+    std::size_t previous = fonts::glyph_count;
     for (std::size_t offset = 0; offset < utf8.size();) {
         const auto character = next_utf8(utf8, offset);
         offset += character.length;
-        ++count;
+        const uint32_t codepoint = character.codepoint == '\t' ? ' ' : character.codepoint;
+        const std::size_t index = fonts::glyph_index(codepoint);
+        const fonts::Glyph& glyph = fonts::glyph_for(face, index);
+        x += fonts::pair_advance(face, previous, index);
+        if (glyph.width != 0 && glyph.height != 0) {
+            const int row_bytes = (int(glyph.width) + 1) / 2;
+            coverage({x + glyph.bearing_x, y + glyph.bearing_y, glyph.width, glyph.height},
+                     face.coverage.subspan(glyph.bitmap_offset, std::size_t(row_bytes) * glyph.height),
+                     color, opacity, clip);
+        }
+        x += glyph.advance;
+        previous = index;
     }
-    return count == 0 ? 0 : (count * 6 - 1) * std::clamp(scale, 1, 8);
+}
+
+void Canvas::paragraph(Rect area, std::string_view utf8, int font_size, Color color,
+                       uint8_t opacity, Rect clip, int font_weight) {
+    const fonts::Face& face = fonts::face_for(font_size, font_weight);
+    if (area.empty()) return;
+    const Rect text_clip = area.clipped(clip.empty() ? Rect{0, 0, m_size.width, m_size.height} : clip);
+    if (text_clip.empty()) return;
+    std::size_t offset = 0;
+    int y = area.y;
+    while (offset < utf8.size()) {
+        const TextLine line = next_text_line(utf8.substr(offset), area.width, face);
+        if (line.next_offset == 0) break;
+        text(area.x, y, line.content, font_size, color, opacity, text_clip, font_weight);
+        y += face.height;
+        offset += line.next_offset;
+    }
+}
+
+int Canvas::text_width(std::string_view utf8, int font_size, int font_weight) {
+    const fonts::Face& face = fonts::face_for(font_size, font_weight);
+    int width = 0;
+    std::size_t previous = fonts::glyph_count;
+    for (std::size_t offset = 0; offset < utf8.size();) {
+        const auto character = next_utf8(utf8, offset);
+        offset += character.length;
+        const uint32_t codepoint = character.codepoint == '\t' ? ' ' : character.codepoint;
+        const std::size_t current = fonts::glyph_index(codepoint);
+        width += fonts::pair_advance(face, previous, current);
+        width += fonts::glyph_for(face, current).advance;
+        previous = current;
+    }
+    return width;
+}
+
+int Canvas::text_height(int font_size, int font_weight) {
+    return fonts::face_for(font_size, font_weight).height;
+}
+
+Size Canvas::wrapped_text_size(std::string_view utf8, int max_width, int font_size, int font_weight) {
+    return mb::wrapped_text_size(utf8, max_width, fonts::face_for(font_size, font_weight));
 }
 
 void Canvas::image(Rect target, const Asset& asset, uint8_t opacity, Rect clip) {

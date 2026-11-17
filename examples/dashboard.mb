@@ -18,31 +18,40 @@
     <field name="diagnostic_json" type="string" value='{"sensor":{"battery":3.9,"connected":true,"site":"Hall sensor"}}'/>
   </state>
   <style>
-    .screen { background: #0b111c; color: ink; font-size: 1; padding: 12; gap: 10; width: 100%; height: 100%; }
-    .card { background: #182232; radius: 12; padding: 12; gap: 8; border: #344358; }
-    .row { gap: 8; align: center; }
+    .screen { background: #F1F4F9; color: #172033; font-size: 14; font-weight: 400; padding: 12; gap: 12; width: 100%; height: 100%; }
+    .card { background: #FFFFFF; color: #172033; border: #DDE3EE; radius: 12; padding: 16; gap: 12; }
+    .row { gap: 12; align: center; }
+    .tiles { align: stretch; }
     .grow { width: grow; }
-    .title { font-size: 2; color: #e5ecf6; }
-    .muted { color: #8b9bb2; }
-    .reading { font-size: 3; color: #e5ecf6; }
-    .button { background: #344358; color: #e5ecf6; radius: 8; padding: 8; }
-    .primary { background: #46d3b2; color: #0b111c; }
-    .warning { background: #fabe55; color: #0b111c; }
-    .error { color: #fa6872; }
-    .input { background: #0b111c; border: #344358; radius: 8; padding: 8; width: grow; }
-    .slider { width: grow; }
-    .progress { width: grow; height: 8; }
-    .chart { background: #0b111c; radius: 8; height: 120; width: grow; }
-    .status { color: #8b9bb2; width: grow; }
+    .compact { gap: 4; }
+    .title { font-size: 20; font-weight: 600; color: #172033; }
+    .section-title { font-size: 16; font-weight: 600; color: #172033; }
+    .label { font-size: 12; font-weight: 400; color: #64748B; }
+    .muted { font-size: 12; font-weight: 400; color: #64748B; }
+    .body { font-size: 14; font-weight: 400; color: #475569; }
+    .value { font-size: 14; font-weight: 400; color: #172033; }
+    .value-strong { font-size: 14; font-weight: 600; color: #172033; }
+    .reading { font-size: 36; font-weight: 600; color: #172033; }
+    .metric { font-size: 28; font-weight: 600; color: #172033; }
+    .small-metric { font-size: 20; font-weight: 600; color: #172033; }
+    .badge { background: #E0E7FF; color: #3730A3; font-size: 12; font-weight: 600; radius: 8; padding: 4; }
+    .button { background: #E9EDF5; color: #3730A3; border: #D8DFEC; font-size: 14; font-weight: 600; radius: 8; padding: 12; height: 44; }
+    .primary { background: #4F46E5; color: #FFFFFF; border: #4F46E5; }
+    .toggle { background: #E0E7FF; color: #3730A3; border: #C7D2FE; }
+    .input { background: #FFFFFF; color: #172033; border: #CBD5E1; font-size: 16; font-weight: 400; radius: 8; padding: 12; width: grow; height: 44; }
+    .slider { width: grow; height: 32; color: #4F46E5; }
+    .progress { width: grow; height: 8; color: #4F46E5; radius: 4; }
+    .success { color: #0F766E; }
+    .chart { background: #F8FAFC; color: #4F46E5; border: #E2E8F0; radius: 8; height: 72; width: grow; }
+    .status { font-size: 12; font-weight: 400; color: #64748B; width: grow; }
   </style>
-  <asset name="climate_art" src="assets/climate.png" resize="32x32"/>
-  <asset name="climate_small" src="assets/climate.png" resize="20x20"/>
+  <asset name="climate_art" src="assets/climate_mark.png" resize="32x32"/>
 
   <page name="dashboard">
     <column id="dashboard_root" class="screen" scroll="true" on_load="start_app()">
       <row id="dashboard_header" class="row">
         <image id="dashboard_logo" src="climate_art" width="32" height="32" animate="pulse:900"/>
-        <column class="grow">
+        <column class="grow compact">
           <text class="title" text="Home climate"/>
           <text class="muted" bind="{state.room}" format="%s"/>
         </column>
@@ -52,51 +61,69 @@
       </row>
 
       <column id="overview" class="card" animate="fade:240">
-        <text class="title" text="Thermostat"/>
-        <text class="reading" value="{state.temperature}" format="%.1f °C"/>
-        <text class="muted" bind="{state.status}"/>
         <row class="row">
-          <button class="button" text="−" on_press="decrease_target()"/>
-          <text value="{state.target}" format="Target %.1f °C"/>
-          <button class="button primary" text="+" on_press="increase_target()"/>
+          <text class="section-title" text="Indoor climate"/>
           <spacer/>
+          <text class="label" text="Mode"/>
+          <text class="badge" value="{state.mode}" format="%s"/>
+        </row>
+        <row class="row">
+          <text class="reading" value="{state.temperature}" format="%.1f °C"/>
+          <spacer/>
+          <column class="compact" align="end">
+            <text class="label" text="Humidity"/>
+            <text class="small-metric" value="{state.humidity}" format="%.0f%%"/>
+          </column>
+        </row>
+        <row class="row">
+          <text class="label" text="Target"/>
+          <text class="small-metric" value="{state.target}" format="%.1f °C"/>
+          <spacer/>
+          <button class="button" text="−" on_press="decrease_target()"/>
+          <button class="button primary" text="+" on_press="increase_target()"/>
           <button class="button" text="Auto / Heat" on_press="toggle_mode()"/>
         </row>
-        <slider id="dashboard_target" class="slider" bind="{state.target}" min="16" max="28" step="0.5" on_change="target_changed()"/>
-        <row class="row">
-          <text class="muted" text="Mode"/>
-          <text value="{state.mode}" format="%s"/>
-          <spacer/>
-          <text class="muted" text="Demand"/>
-          <text value="{state.power}" format="%.2f kW"/>
-        </row>
-        <chart id="trend" class="chart" height="48" min="20" max="24" samples="21.8,22.0,22.1,22.4"/>
+        <slider id="dashboard_target" class="slider" bind="{state.target}" min="16" max="28" step="0.5" on_change="overview_target_changed()"/>
       </column>
 
-      <row id="environment_cards" class="row">
+      <column class="card">
+        <row class="row">
+          <text class="section-title" text="Environment trend"/>
+          <spacer/>
+          <text class="muted" text="20-24 °C"/>
+        </row>
+        <chart id="trend" class="chart" min="20" max="24" samples="21.8,22.0,22.1,22.4"/>
+      </column>
+
+      <row id="environment_cards" class="row tiles">
         <column id="humidity_card" class="card grow">
-          <text class="title" text="Humidity"/>
-          <text value="{state.humidity}" format="%.0f%%"/>
+          <text class="section-title" text="Humidity"/>
+          <text class="metric" value="{state.humidity}" format="%.0f%%"/>
           <progress class="progress" value="{state.humidity}" min="0" max="100"/>
-          <text class="muted" text="Comfort range 40–60%"/>
+          <text class="muted" text="Comfort range 40-60%"/>
         </column>
         <column id="air_card" class="card grow">
-          <text class="title" text="Air quality"/>
-          <text value="{state.co2}" format="%.0f ppm CO₂"/>
+          <text class="section-title" text="Air quality"/>
+          <text class="metric" value="{state.co2}" format="%.0f ppm"/>
+          <text class="label" text="CO2 concentration"/>
           <text class="muted" bind="{state.sensor_site}"/>
-          <image src="climate_small" width="20" height="20" animate="fade"/>
         </column>
       </row>
 
       <column class="card">
-        <text class="title" text="Local sensor simulation"/>
-        <text class="muted" text="No network or external service is used."/>
+        <text class="section-title" text="Local sensor simulation"/>
+        <text class="body" text="Local data only • no network required"/>
+        <text class="body" bind="{state.status}"/>
         <row class="row">
           <button class="button primary" text="Refresh snapshot" on_press="schedule_refresh()"/>
           <button class="button" text="Cancel pending" on_press="cancel_refresh()"/>
           <button class="button" text="Toggle sensor" on_press="toggle_connection()"/>
         </row>
-        <text bind="{state.sensor_online}"/>
+        <row class="row">
+          <text class="label" text="Sensor connection"/>
+          <spacer/>
+          <text class="value-strong" bind="{state.sensor_online}"/>
+        </row>
       </column>
     </column>
   </page>
@@ -104,27 +131,40 @@
   <page name="details">
     <column id="details_root" class="screen" scroll="true" on_load="start_details()">
       <row class="row">
-        <button class="button" text="Back" on_press="go_back()"/>
+        <button class="button" text="← Back" on_press="go_back()"/>
         <text class="title" text="Environment trends"/>
         <spacer/>
         <text class="muted" value="{state.elapsed}" format="%.0f s"/>
       </row>
       <column class="card" animate="slide:180">
-        <text class="title" text="Temperature history"/>
-        <chart id="trend" class="chart" min="20" max="24" samples="21.2,21.4,21.3,21.6,21.9,22.0,22.2,22.4" animate="fade:200"/>
         <row class="row">
-          <text class="muted" text="Humidity"/>
-          <text value="{state.humidity}" format="%.0f%%"/>
+          <text class="section-title" text="Temperature history"/>
           <spacer/>
-          <text class="muted" text="Battery"/>
-          <text value="{state.battery}" format="%.2f V"/>
+          <text class="muted" text="20-24 °C"/>
+        </row>
+        <chart id="trend" class="chart" height="120" min="20" max="24" samples="21.2,21.4,21.3,21.6,21.9,22.0,22.2,22.4" animate="fade:200"/>
+        <row class="row">
+          <text class="label" text="Humidity"/>
+          <text class="value-strong" value="{state.humidity}" format="%.0f%%"/>
+          <spacer/>
+          <text class="label" text="Battery"/>
+          <text class="value-strong" value="{state.battery}" format="%.2f V"/>
         </row>
       </column>
       <column id="overview" class="card" animate="pulse">
-        <text class="title" text="Setpoint and energy"/>
-        <text value="{state.target}" format="%.1f °C"/>
-        <slider id="details_target" class="slider" value="{state.target}" min="16" max="28" step="0.5" on-change="target_changed()"/>
-        <text value="{state.power}" format="Estimated %.2f kW"/>
+        <text class="section-title" text="Setpoint and energy"/>
+        <row class="row">
+          <column class="compact">
+            <text class="label" text="Target"/>
+            <text class="small-metric" value="{state.target}" format="%.1f °C"/>
+          </column>
+          <spacer/>
+          <column class="compact" align="end">
+            <text class="label" text="Power estimate"/>
+            <text class="small-metric" value="{state.power}" format="%.2f kW"/>
+          </column>
+        </row>
+        <slider id="details_target" class="slider" value="{state.target}" min="16" max="28" step="0.5" on-change="overview_target_changed()"/>
         <row class="row">
           <button class="button" text="Target −" on_press="decrease_target()"/>
           <button class="button primary" text="Target +" on_press="increase_target()"/>
@@ -132,9 +172,13 @@
         </row>
       </column>
       <column class="card">
-        <text class="title" text="Air quality"/>
-        <progress class="progress" bind="{state.co2}" min="0" max="1600" style="height: 10;"/>
-        <text value="{state.co2}" format="%.0f ppm"/>
+        <text class="section-title" text="Air quality"/>
+        <row class="row">
+          <text class="small-metric" value="{state.co2}" format="%.0f ppm"/>
+          <spacer/>
+          <text class="muted" bind="{state.sensor_site}"/>
+        </row>
+        <progress class="progress success" bind="{state.co2}" min="0" max="1600" height="10"/>
         <button class="button primary" text="Sample offline sensor" on_press="schedule_refresh()"/>
       </column>
     </column>
@@ -143,36 +187,58 @@
   <page name="settings">
     <column id="settings_root" class="screen" scroll="true" on_load="start_settings()">
       <row class="row">
-        <button class="button" text="Back" on_press="go_back()"/>
+        <button class="button" text="← Back" on_press="go_back()"/>
         <text class="title" text="Climate settings"/>
       </row>
       <column class="card">
-        <text class="title" text="Room"/>
+        <text class="section-title" text="Room"/>
+        <text class="muted" text="Shown on the overview and saved on this device."/>
         <input id="room_input" class="input" bind="{state.room}" placeholder="Room name" max-length="32" on_change="room_changed()" on_submit="save_room()"/>
-        <text bind="{state.room}" format="%s" style="color: #5ca5fa;" color="#8b9bb2"/>
+        <row class="row">
+          <text class="label" text="Current room"/>
+          <spacer/>
+          <text class="value-strong" bind="{state.room}" format="%s"/>
+        </row>
         <row class="row">
           <button class="button primary" text="Save room" on_press="save_room()"/>
-          <button class="button" text="Use Hall" on_press="use_hall()"/>
+          <button class="button" text="Use Hall preset" on_press="use_hall()"/>
         </row>
       </column>
       <column class="card">
-        <text class="title" text="Alerts and persistence"/>
-        <text bind="{state.alerts}"/>
-        <button class="button warning" text="High-CO₂ alerts" on_press="toggle_alerts()"/>
-        <text class="muted" text="Setpoint, room, mode, and alert selection are restored on launch."/>
+        <text class="section-title" text="Temperature target"/>
+        <row class="row">
+          <text class="small-metric" value="{state.target}" format="%.1f °C"/>
+          <spacer/>
+          <text class="label" text="Mode"/>
+          <text class="badge" value="{state.mode}" format="%s"/>
+        </row>
+        <slider id="settings_target" class="slider" bind="{state.target}" min="16" max="28" step="0.5" on_change="target_changed()"/>
+        <row class="row">
+          <button class="button" text="Target −" on_press="decrease_target()"/>
+          <button class="button primary" text="Target +" on_press="increase_target()"/>
+          <button class="button" text="Save setpoint" on_press="save_target()"/>
+        </row>
+      </column>
+      <column class="card">
+        <text class="section-title" text="Alerts and persistence"/>
+        <row class="row">
+          <text class="body" text="High-CO2 alerts"/>
+          <spacer/>
+          <text class="value-strong" bind="{state.alerts}"/>
+        </row>
+        <button class="button toggle" text="Toggle alerts" on_press="toggle_alerts()"/>
+        <text class="muted" text="Target, room, mode, and alert choices"/>
+        <text class="muted" text="are restored when the app launches."/>
         <button class="button primary" text="Save current configuration" on_press="save_all()"/>
         <button class="button" text="Run local selftest" on_press="selftest()"/>
       </column>
-      <stack height="56">
-        <view class="card" x="4" y="4"/>
-        <row class="row" x="0" y="0">
-          <text class="status" bind="{state.status}"/>
-          <button class="button" text="Stop timers" on_press="stop_timers()"/>
-        </row>
-      </stack>
+      <column class="card">
+        <text class="section-title" text="Device session"/>
+        <text class="status" bind="{state.status}"/>
+        <button class="button" text="Stop timers" on_press="stop_timers()"/>
+      </column>
     </column>
   </page>
-
   <script><![CDATA[
     fn sanitize_target(value) {
       let bounded = clamp(value, 16, 28);
@@ -183,24 +249,36 @@
       return len(state.room);
     }
 
-    fn update_preview() {
+    fn update_setpoint_status() {
       state.status = "Setpoint " + string(state.target) + " °C";
+    }
+
+    fn set_target(value) {
+      state.target = sanitize_target(value);
+      update_setpoint_status();
+    }
+
+    fn pulse_overview() {
       animate("overview", "scale", 1.02, 120);
     }
 
     fn target_changed() {
-      state.target = sanitize_target(state.target);
-      update_preview();
+      set_target(state.target);
+    }
+
+    fn overview_target_changed() {
+      set_target(state.target);
+      pulse_overview();
     }
 
     fn decrease_target() {
-      state.target = sanitize_target(state.target - 0.5);
-      update_preview();
+      set_target(state.target - 0.5);
+      pulse_overview();
     }
 
     fn increase_target() {
-      state.target = sanitize_target(state.target + 0.5);
-      update_preview();
+      set_target(state.target + 0.5);
+      pulse_overview();
     }
 
     fn save_target() {

@@ -1,4 +1,8 @@
+.DS_Store
 build/
+.tools/
+__pycache__/
+*.pyc
 .microbrowser-state
 .microbrowser-state.tmp.*
 managed_components/

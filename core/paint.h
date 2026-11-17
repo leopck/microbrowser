@@ -17,6 +17,10 @@ struct Painter {
 
 private:
     void draw(const Node& node, uint8_t parent_opacity, Rect clip);
+    void scrollbar(const Node& node, Rect area, uint8_t opacity, Rect clip);
+    void button(const Node& node, Rect area, uint8_t opacity, Rect clip);
+    void input(const Node& node, Rect area, uint8_t opacity, Rect clip);
+    void text(const Node& node, Rect area, uint8_t opacity, Rect clip);
     void content_box(const Node& node, Rect area, float number, Color color, uint8_t opacity, Rect clip);
     void chart(const Node& node, Rect area, uint8_t opacity, Rect clip);
     void keyboard(Rect clip);

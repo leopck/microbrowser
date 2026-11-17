@@ -300,26 +300,25 @@ TemporaryFile temporary_path_for(const std::filesystem::path& destination) {
     return TemporaryFile{std::move(path), false};
 }
 
+namespace {
+constexpr std::array<char, 16> hexadecimal_digits{
+    '0', '1', '2', '3', '4', '5', '6', '7',
+    '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+};
+} // namespace
+
 void write_hex(std::ostream& output, std::string_view bytes) {
-    constexpr std::array<char, 16> digits{
-        '0', '1', '2', '3', '4', '5', '6', '7',
-        '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
-    };
     for (const unsigned char byte : bytes) {
-        const std::array<char, 2> encoded{digits[byte >> 4U], digits[byte & 0x0fU]};
+        const std::array<char, 2> encoded{hexadecimal_digits[byte >> 4U], hexadecimal_digits[byte & 0x0fU]};
         output.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
     }
 }
 
 void write_number(std::ostream& output, float number) {
-    constexpr std::array<char, 16> digits{
-        '0', '1', '2', '3', '4', '5', '6', '7',
-        '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
-    };
     uint32_t bits = std::bit_cast<uint32_t>(number);
     std::array<char, 8> encoded{};
     for (std::size_t index = encoded.size(); index > 0; --index) {
-        encoded[index - 1] = digits[bits & 0x0fU];
+        encoded[index - 1] = hexadecimal_digits[bits & 0x0fU];
         bits >>= 4U;
     }
     output.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));

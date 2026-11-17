@@ -10,10 +10,11 @@ from pathlib import Path
 
 # Imported for package self-validation; keep this module usable independently of cli.py.
 from .errors import CompileError, PngError
-from .package import MAX_PACKAGE_BYTES, decode_package
+from .package import FONT_SIZES, FONT_WEIGHTS, MAX_PACKAGE_BYTES, VERSION_MAJOR, VERSION_MINOR, decode_package
 from .png import rgb565_asset
 from .script import Constant, EncodedFunction, ValueType, compile_script
 from .xml_source import XmlElement, parse_xml_bytes, parse_xml_file
+
 
 NODE_KINDS = {
     "view": 0,
@@ -37,6 +38,7 @@ COMMON_PROPERTIES = {
     "padding",
     "gap",
     "font-size",
+    "font-weight",
     "radius",
     "background",
     "color",
@@ -69,15 +71,15 @@ PALETTE = {
     "transparent": 0x00000000,
     "black": 0x000000FF,
     "white": 0xFFFFFFFF,
-    "ink": 0xE5ECF6FF,
-    "muted": 0x8B9BB2FF,
-    "background": 0x0B111CFF,
-    "surface": 0x182232FF,
-    "border": 0x344358FF,
-    "accent": 0x46D3B2FF,
-    "blue": 0x5CA5FAFF,
-    "warning": 0xFABE55FF,
-    "error": 0xFA6872FF,
+    "ink": 0x1F293BFF,
+    "muted": 0x68758AFF,
+    "background": 0xF3F5FAFF,
+    "surface": 0xFFFFFFFF,
+    "border": 0xDCE3EDFF,
+    "accent": 0x12826FFF,
+    "blue": 0x4263EBFF,
+    "warning": 0xD98924FF,
+    "error": 0xBC2D3EFF,
 }
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 CSS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
@@ -86,6 +88,17 @@ BINDING = re.compile(r"\{state\.([A-Za-z_][A-Za-z0-9_]*)\}")
 HANDLER = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)")
 INTEGER = re.compile(r"[+-]?[0-9]+")
 FORMAT_CONVERSION = re.compile(r"%(?:\.[0-6]f|[fds])")
+MAX_ELEMENT_ID_BYTES = 128
+MAX_FIXED_PIXELS = 16_384
+INTEGER_PROPERTY_BOUNDS = {
+    "padding": (0, 256),
+    "gap": (0, 256),
+    "radius": (0, 256),
+    "x": (-MAX_FIXED_PIXELS, MAX_FIXED_PIXELS),
+    "y": (-MAX_FIXED_PIXELS, MAX_FIXED_PIXELS),
+    "max-length": (0, 65_535),
+}
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -506,8 +519,8 @@ def _length(raw: str, element: XmlElement, name: str) -> EncodedProperty:
             raise element.error(f"{name} percentage must be from 0 through 100")
         return EncodedProperty(name, 0, f"{percentage:.9g}%")
     pixels = _number(value, element, name)
-    if pixels < 0:
-        raise element.error(f"{name} cannot be negative")
+    if not 0 <= pixels <= MAX_FIXED_PIXELS:
+        raise element.error(f"{name} must be between 0 and {MAX_FIXED_PIXELS} pixels")
     return EncodedProperty(name, 1, pixels)
 
 
@@ -624,14 +637,18 @@ class _UiCompiler:
             if canonical in ("id", "src") and not value:
                 raise element.error(f"{canonical} must be nonempty")
             if canonical == "id":
+                if len(value.encode("utf-8")) > MAX_ELEMENT_ID_BYTES:
+                    raise element.error(f"element id exceeds {MAX_ELEMENT_ID_BYTES} bytes")
                 if value in self.ids:
                     raise element.error(f"duplicate element id {value!r} on one page")
                 self.ids.add(value)
             if canonical == "animate":
                 match = re.fullmatch(r"(fade|pulse|slide)(?::([0-9]+))?", value.strip())
-                if not match or (match.group(2) is not None and not 1 <= int(match.group(2)) <= 0xFFFFFFFF):
-                    raise element.error("animate must be fade, pulse, or slide, optionally followed by :ms")
-                value = match.group(0)
+                if not match or (match.group(2) is not None and not 1 <= int(match.group(2)) <= 60_000):
+                    raise element.error("animate must be fade, pulse, or slide; duration must be 1..60000 milliseconds")
+                value = match.group(1)
+                if match.group(2) is not None:
+                    value += ":" + str(int(match.group(2)))
             if canonical == "src" and value not in self.asset_names:
                 raise element.error(f"image src {value!r} does not name a declared asset")
             return EncodedProperty(canonical, 0, value)
@@ -672,14 +689,17 @@ class _UiCompiler:
             if value.strip() not in ("static", "absolute"):
                 raise element.error("position must be static or absolute")
             return EncodedProperty(name, 0, value.strip())
-        if name in ("padding", "gap", "font-size", "radius", "x", "y", "max-length"):
+        if name in ("font-size", "font-weight"):
             integer = _integer(value, element, name)
-            minimum = 1 if name == "font-size" else 0
-            if name in ("x", "y"):
-                minimum = -0x80000000
-            maximum = 65_535 if name == "max-length" else 0x7FFFFFFF
+            allowed = FONT_SIZES if name == "font-size" else FONT_WEIGHTS
+            if integer not in allowed:
+                raise element.error(f"{name} must be one of {allowed}")
+            return EncodedProperty(name, 1, float(integer))
+        if name in ("padding", "gap", "radius", "x", "y", "max-length"):
+            integer = _integer(value, element, name)
+            minimum, maximum = INTEGER_PROPERTY_BOUNDS[name]
             if not minimum <= integer <= maximum:
-                raise element.error(f"{name} is outside its supported integer range")
+                raise element.error(f"{name} must be an integer between {minimum} and {maximum}")
             return EncodedProperty(name, 1, float(integer))
         if name in ("min", "max", "step"):
             return EncodedProperty(name, 1, _number(value, element, name))
@@ -790,7 +810,7 @@ def _envelope(sections: list[tuple[bytes, bytes]]) -> bytes:
     total_size = 20 + len(body)
     if total_size > MAX_PACKAGE_BYTES:
         raise CompileError("package", 1, 1, f"package size {total_size} exceeds 16 MiB")
-    header = struct.pack("<4sHHIII", b"MBPK", 1, 0, total_size, len(sections), 0)
+    header = struct.pack("<4sHHIII", b"MBPK", VERSION_MAJOR, VERSION_MINOR, total_size, len(sections), 0)
     without_crc = header + bytes(body)
     crc = zlib.crc32(without_crc) & 0xFFFFFFFF
     return without_crc[:16] + struct.pack("<I", crc) + without_crc[20:]

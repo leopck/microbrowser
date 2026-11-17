@@ -12,7 +12,6 @@
 #endif
 
 #include <algorithm>
-#include <array>
 #include <charconv>
 #include <chrono>
 #include <cstdint>

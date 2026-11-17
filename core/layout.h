@@ -16,7 +16,8 @@ private:
     void place_stack(Node& node, Rect content);
     int resolve(Length length, int available, int fallback) const;
     Size bound_size(const Node& node, Size available, Size measured);
-    void text_size(const Node& node, std::string_view content, int& width, int& height) const;
+    void text_size(const Node& node, std::string_view content, Size available,
+                   int& width, int& height) const;
 };
 
 } // namespace mb

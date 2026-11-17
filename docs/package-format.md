@@ -1,4 +1,4 @@
-# Microbrowser package format, version 1
+# Microbrowser package format, version 2
 
 Integers are little-endian. A string ID is a zero-based `uint32_t` index into
 that package's `STRS` section. A missing state, function, or string reference
@@ -15,7 +15,7 @@ The 20-byte header is:
 | Field | Encoding |
 |---|---|
 | Magic | Four bytes `MBPK` |
-| Major version | `uint16_t`, value 1 |
+| Major version | `uint16_t`, value 2 |
 | Minor version | `uint16_t`, value 0 |
 | Total package size | `uint32_t`, including this header |
 | Section count | `uint32_t` |
@@ -24,7 +24,7 @@ The 20-byte header is:
 Each section starts with four identifier bytes followed by its payload size as
 `uint32_t`. Exactly one `STRS`, `STAT`, and `CODE` section is required. One or
 more `PAGE` sections and zero or more `DATA` sections follow. No other sections
-are accepted in version 1. Section identifiers are `STRS`, `STAT`, `CODE`,
+are accepted in version 2. Section identifiers are `STRS`, `STAT`, `CODE`,
 `PAGE`, and `DATA`.
 
 ## Strings: `STRS`
@@ -166,7 +166,7 @@ across a package.
 Each node has:
 
 1. Kind (`uint8_t`)
-2. Flags (`uint8_t`, reserved and zero in version 1)
+2. Flags (`uint8_t`, reserved and zero in version 2)
 3. Property count (`uint16_t`, maximum 40)
 4. Property records
 5. Child count (`uint32_t`)
@@ -203,6 +203,18 @@ defaults are listed in `authoring.md`.
 Fixed `width` and `height` values may range from 0 through 16,384 pixels.
 Absolute `x` and `y` offsets may range from -16,384 through 16,384 pixels.
 Non-finite lengths and offsets are errors. Zero fixed dimensions are valid.
+
+## Typography
+
+Fonts are built into the renderer rather than packaged separately. Inter glyph
+advance, kerning, and four-bit antialiased coverage are generated at authoring
+time into fixed C++ tables. The runtime performs table lookup and RGB565 pixel
+blending; it does not parse a TTF or call a platform font library during drawing.
+Supported pixel sizes are `12`, `14`, `16`, `20`, `28`, and `36`, with weights
+`400` and `600`. Glyph selection and validation reject other sizes and weights.
+The encoded `font-size` and `font-weight` properties are binary32 numbers.
+`font-size` changed from bitmap scale to pixels in this version; packages from
+version 1 must be regenerated to avoid ambiguous layout semantics.
 
 ## Images: `DATA`
 

@@ -10,8 +10,10 @@ from .errors import PackageError
 from .script import BUILTINS, Opcode, ValueType
 
 MAGIC = b"MBPK"
-VERSION_MAJOR = 1
+VERSION_MAJOR = 2
 VERSION_MINOR = 0
+FONT_SIZES = (12, 14, 16, 20, 28, 36)
+FONT_WEIGHTS = (400, 600)
 HEADER_SIZE = 20
 MAX_PACKAGE_BYTES = 16 * 1024 * 1024
 MAX_STATES = 256
@@ -47,6 +49,7 @@ PROPERTY_NAMES = {
     "padding",
     "gap",
     "font-size",
+    "font-weight",
     "radius",
     "background",
     "color",
@@ -61,7 +64,7 @@ PROPERTY_NAMES = {
 EVENT_PROPERTIES = {"on_press", "on_change", "on_submit", "on_load"}
 PROPERTY_VALUE_KINDS = {
     **dict.fromkeys(("id", "text", "format", "placeholder", "src", "animate", "samples"), {0}),
-    **dict.fromkeys(("padding", "gap", "font-size", "radius", "x", "y", "min", "max", "step", "max-length"), {1}),
+    **dict.fromkeys(("padding", "gap", "font-size", "font-weight", "radius", "x", "y", "min", "max", "step", "max-length"), {1}),
     **dict.fromkeys(("background", "color", "border"), {3}),
     **dict.fromkeys(("align", "justify", "position"), {0}),
     **dict.fromkeys(("width", "height"), {0, 1}),
@@ -211,7 +214,6 @@ def _strings(payload: bytes, offset: int) -> tuple[str, ...]:
     table_size = count * 4
     if table_size > reader.remaining:
         raise PackageError("STRS count exceeds its offset table")
-    table_offset = reader.position
     offsets = [
         struct.unpack_from("<I", reader.take(4, "string offset"))[0] for _ in range(count)
     ]
@@ -393,7 +395,6 @@ def _node(
     functions: tuple[DecodedFunction, ...],
     depth: int,
     node_count: list[int],
-    asset_names: set[str] | None = None,
 ) -> DecodedNode:
     if depth > MAX_DEPTH:
         raise PackageError("PAGE exceeds 32 nested elements")
@@ -405,11 +406,12 @@ def _node(
     if kind > 11:
         raise PackageError(f"unknown node kind {kind}")
     if flags != 0:
-        raise PackageError("version-1 node flags must be zero")
+        raise PackageError("version-2 node flags must be zero")
     property_count = reader.u16("property count")
     if property_count > MAX_PROPERTIES:
         raise PackageError("node exceeds 40 properties")
     properties: dict[str, DecodedProperty] = {}
+
     for _ in range(property_count):
         name = _string(strings, reader.u32("property name ID"), "property name")
         if name not in PROPERTY_NAMES:
@@ -445,13 +447,19 @@ def _node(
             if not 0 <= int(value) < len(functions):
                 raise PackageError(f"{name} refers to missing function {int(value)}")
         properties[name] = DecodedProperty(value_kind, value)
+        size = properties.get("font-size")
+        if size is not None and float(size.value) not in FONT_SIZES:
+            raise PackageError(f"font-size must be one of {FONT_SIZES}")
+        weight = properties.get("font-weight")
+        if weight is not None and float(weight.value) not in FONT_WEIGHTS:
+            raise PackageError(f"font-weight must be one of {FONT_WEIGHTS}")
     child_count = reader.u32("child count")
     if child_count > 64:
         raise PackageError("node exceeds 64 direct children")
     if kind not in CONTAINER_KINDS and child_count:
         raise PackageError(f"node kind {kind} cannot contain children")
     children = tuple(
-        _node(reader, strings, states, functions, depth + 1, node_count, asset_names)
+        _node(reader, strings, states, functions, depth + 1, node_count)
         for _ in range(child_count)
     )
     return DecodedNode(kind, properties, children)
@@ -601,7 +609,7 @@ def count_nodes(node: DecodedNode) -> int:
 def inspect_summary(path: str | Path, package: DecodedPackage) -> str:
     lines = [
         f"Package: {path}",
-        "Version: 1.0",
+        f"Version: {VERSION_MAJOR}.{VERSION_MINOR}",
         f"Strings: {len(package.strings)}",
         f"State fields: {len(package.states)}",
     ]

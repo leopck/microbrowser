@@ -43,9 +43,16 @@ Size Layout::bound_size(const Node& node, Size available, Size measured) {
     return {width, height};
 }
 
-void Layout::text_size(const Node& node, std::string_view content, int& width, int& height) const {
-    width = Canvas::text_width(content, node.style.font_size) + node.style.padding * 2;
-    height = Canvas::text_height(node.style.font_size) + std::max(12, node.style.padding * 2);
+void Layout::text_size(const Node& node, std::string_view content, Size available,
+                       int& width, int& height) const {
+    const int available_width = node.style.width.kind == LengthKind::fixed
+        ? std::max(0, int(node.style.width.value)) : std::max(0, available.width);
+    const Size measured = Canvas::wrapped_text_size(content,
+        std::max(1, available_width - node.style.padding * 2),
+        node.style.font_size, node.style.font_weight);
+    width = measured.width + node.style.padding * 2;
+    height = measured.height + std::max(0, node.style.padding * 2);
+    if (node.kind == NodeKind::button) height = std::max(32, height);
 }
 
 Size Layout::measure(const Node& node, Size available) {
@@ -55,7 +62,7 @@ Size Layout::measure(const Node& node, Size available) {
         std::string_view content = node.text;
         if (node.binding != no_index) content = format_value(browser.m_state[node.binding], node.format, buffer);
         if (content.empty() && node.kind == NodeKind::button) content = " ";
-        text_size(node, content, measured.width, measured.height);
+        text_size(node, content, available, measured.width, measured.height);
     } else if (node.kind == NodeKind::input) {
         measured = {180 + node.style.padding * 2, 32 + node.style.padding * 2};
     } else if (node.kind == NodeKind::slider) {
@@ -145,7 +152,7 @@ void Layout::place_children(Node& node) {
         if (count == children.size()) throw PackageError("layout allows at most 64 children per container");
         children[count++] = item;
         if (grows(child, along_x)) ++grow_count;
-        else occupied += along_x ? item.measurement.width : item.measurement.height;
+        occupied += along_x ? item.measurement.width : item.measurement.height;
     }
     const int normal_gaps = count > 1 ? (int(count) - 1) * node.style.gap : 0;
     const int free_space = node.style.scroll ? 0 : std::max(0, available - occupied - normal_gaps);
@@ -166,8 +173,10 @@ void Layout::place_children(Node& node) {
         const Size measurement = children[index].measurement;
         int main = 0;
         if (grows(child, along_x)) {
-            main = remaining / grow_count;
-            remaining -= main;
+            const int intrinsic = along_x ? measurement.width : measurement.height;
+            const int assigned = remaining / grow_count;
+            main = intrinsic + assigned;
+            remaining -= assigned;
             --grow_count;
         } else {
             main = along_x ? measurement.width : measurement.height;

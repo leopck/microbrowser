@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
-#include <string_view>
 #include <memory>
 #include <vector>
 
@@ -49,15 +48,15 @@ namespace palette {
 inline constexpr auto transparent = Color::rgba(0, 0, 0, 0);
 inline constexpr auto black = Color::rgb(0, 0, 0);
 inline constexpr auto white = Color::rgb(255, 255, 255);
-inline constexpr auto ink = Color::rgb(229, 236, 246);
-inline constexpr auto muted = Color::rgb(139, 155, 178);
-inline constexpr auto background = Color::rgb(11, 17, 28);
-inline constexpr auto surface = Color::rgb(24, 34, 50);
-inline constexpr auto border = Color::rgb(52, 67, 88);
-inline constexpr auto accent = Color::rgb(70, 211, 178);
-inline constexpr auto blue = Color::rgb(92, 165, 250);
-inline constexpr auto warning = Color::rgb(250, 190, 85);
-inline constexpr auto error = Color::rgb(250, 104, 114);
+inline constexpr auto ink = Color::rgb(31, 41, 59);
+inline constexpr auto muted = Color::rgb(104, 117, 138);
+inline constexpr auto background = Color::rgb(243, 245, 250);
+inline constexpr auto surface = Color::rgb(255, 255, 255);
+inline constexpr auto border = Color::rgb(220, 227, 237);
+inline constexpr auto accent = Color::rgb(18, 130, 111);
+inline constexpr auto blue = Color::rgb(66, 99, 235);
+inline constexpr auto warning = Color::rgb(217, 137, 36);
+inline constexpr auto error = Color::rgb(188, 45, 62);
 } // namespace palette
 
 struct Value {
@@ -108,7 +107,8 @@ struct Style {
     Length height;
     int padding = 0;
     int gap = 0;
-    int font_size = 1;
+    int font_size = 14;
+    int font_weight = 400;
     int radius = 0;
     Color background = palette::transparent;
     Color foreground = palette::ink;

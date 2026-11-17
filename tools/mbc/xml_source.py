@@ -26,9 +26,6 @@ class XmlElement:
     def text(self) -> str:
         return "".join(self.parts)
 
-    def location(self) -> tuple[str, int, int]:
-        return self.path, self.line, self.column
-
     def error(self, message: str) -> CompileError:
         return CompileError(self.path, self.line, self.column, message)
 
