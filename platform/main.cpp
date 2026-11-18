@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstdlib>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -35,6 +36,11 @@ constexpr int default_scale = 2;
 constexpr uint64_t default_headless_frames = 120;
 constexpr auto frame_interval = std::chrono::milliseconds(16);
 
+std::string default_gateway_url() {
+    const char* value = std::getenv("MB_GATEWAY_URL");
+    return value != nullptr && *value != '\0' ? std::string(value) : "http://127.0.0.1:8765";
+}
+
 class UsageError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -45,6 +51,8 @@ struct Options {
     Size size = default_size;
     int scale = default_scale;
     std::optional<uint64_t> frame_limit;
+    std::string url;
+    std::string gateway_url = default_gateway_url();
     std::filesystem::path screenshot;
     bool has_screenshot = false;
     bool headless = false;
@@ -58,12 +66,13 @@ void print_usage(std::ostream& output) {
     output <<
         "Usage: microbrowser --package FILE.mbp [--size 480x320] [--scale 2]\n"
         "                    [--frames N] [--screenshot FILE.ppm] [--headless]\n"
+        "                    [--url URL] [--gateway HTTP_ORIGIN]\n"
         "                    [--events FILE] [--spi-hz HZ]\n"
         "\n"
         "Runs the native SDL2 RGB565 simulator. Headless mode defaults to 120\n"
         "application frames; without --frames, windowed mode runs until close.\n"
         "Replay commands: click/down/move/up X Y, wait MS, key NAME, text TEXT,\n"
-        "call FUNCTION, scroll DELTA, and shot FILE.ppm.\n";
+        "call FUNCTION, url URL, interactive URL, scroll DELTA, and shot FILE.ppm.\n";
 }
 
 template <typename T>
@@ -117,8 +126,12 @@ Options parse_options(int argc, char* argv[]) {
             options.help = true;
         } else if (argument == "--package") {
             options.package = parse_path(require_value(argc, argv, index), argument);
+        } else if (argument == "--url") {
+            options.url = std::string(require_value(argc, argv, index));
         } else if (argument == "--size") {
             options.size = parse_size(require_value(argc, argv, index));
+        } else if (argument == "--gateway") {
+            options.gateway_url = std::string(require_value(argc, argv, index));
         } else if (argument == "--scale") {
             options.scale = parse_integer<int>(require_value(argc, argv, index), argument);
             if (options.scale < 1 || options.scale > 4) {
@@ -144,7 +157,9 @@ Options parse_options(int argc, char* argv[]) {
             throw UsageError("unknown argument '" + std::string(argument) + "'");
         }
     }
-    if (!options.help && options.package.empty()) throw UsageError("--package is required");
+    if (!options.help && options.package.empty() == options.url.empty()) {
+        throw UsageError("choose exactly one of --package or --url");
+    }
     return options;
 }
 
@@ -415,6 +430,12 @@ void print_report(const Options& options, const Browser& browser, uint64_t appli
     std::cout << "\nRendered pixels: " << uploaded_pixels
               << " in damage regions; framebuffer " << size.width << 'x' << size.height
               << " RGB565 (" << framebuffer_bytes << " bytes)\n";
+    std::string page(browser.page_name());
+    for (char& character : page) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (byte < 0x20U || byte == 0x7fU) character = '?';
+    }
+    std::cout << "Content: " << page << " (" << browser.content_mode() << ")\n";
     std::cout << "Browser metrics: rendered frames=" << metrics.frames
               << ", scripts=" << metrics.scripts
               << ", layouts=" << metrics.layout_count
@@ -446,9 +467,9 @@ int run(const Options& options) {
     DesktopPlatform platform;
     SdlContext sdl;
     SdlDisplay display(options.size, options.scale);
-    Browser browser(platform, options.size);
-    const std::string package_path = options.package.string();
-    browser.load(read_package_file(package_path.c_str()));
+    Browser browser(platform, options.size, options.gateway_url);
+    if (options.url.empty()) browser.load(read_package_file(options.package.string().c_str()));
+    else browser.open_url(options.url, false);
 
     std::optional<EventReplay> replay;
     if (options.has_events) replay.emplace(options.events);

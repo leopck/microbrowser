@@ -1,5 +1,8 @@
 CXX ?= c++
 PYTHON ?= python3
+GATEWAY_VENV ?= .tools/gateway-venv
+GATEWAY_PYTHON ?= $(GATEWAY_VENV)/bin/python
+
 
 SDL_CFLAGS := $(shell sdl2-config --cflags)
 SDL_LIBS := $(shell sdl2-config --libs)
@@ -20,7 +23,7 @@ DASHBOARD_ASSETS := $(wildcard examples/assets/*)
 COMPILER_SOURCES := $(wildcard tools/mbc/*.py)
 CORE_OBJECTS := $(patsubst %.cpp,build/obj/%.o,$(CORE_SOURCES))
 
-.PHONY: all dashboard run test firmware qemu clean
+.PHONY: all dashboard run test firmware qemu gateway web-test clean
 
 all: build/microbrowser
 
@@ -71,6 +74,19 @@ firmware: dashboard
 qemu: dashboard
 	firmware/run.sh --build-only
 	$(PYTHON) tools/qemu_smoke.py --headless
+
+$(GATEWAY_VENV)/.installed: gateway/requirements-interactive.txt $(GATEWAY_PYTHON)
+	$(GATEWAY_PYTHON) -m pip install --disable-pip-version-check -r $<
+	touch $@
+
+$(GATEWAY_PYTHON):
+	$(PYTHON) -m venv $(GATEWAY_VENV)
+
+gateway: $(GATEWAY_VENV)/.installed
+	$(GATEWAY_PYTHON) -m gateway.server --host 127.0.0.1 --port 8765
+
+web-test: test $(GATEWAY_VENV)/.installed
+	$(GATEWAY_PYTHON) -m unittest discover -s gateway/tests -p 'test_*.py' -v
 
 clean:
 	rm -rf build

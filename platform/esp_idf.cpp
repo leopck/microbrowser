@@ -46,7 +46,13 @@ namespace {
 constexpr char kLogTag[] = "microbrowser";
 constexpr char kStorageNamespace[] = "mb";
 constexpr std::size_t kRequestLimit = 8;
-constexpr std::size_t kMaxResponseBytes = 64U * 1024U;
+constexpr std::size_t kMaxScriptResponseBytes = 64U * 1024U;
+constexpr std::size_t kMaxContentResponseBytes = 2U * 1024U * 1024U;
+constexpr std::size_t kMaxScriptUrlBytes = 2047;
+constexpr std::size_t kMaxContentUrlBytes = 8192;
+constexpr std::size_t kMaxContentBodyBytes = 4096;
+constexpr int kMaxScriptRedirects = 3;
+constexpr int kMaxContentRedirects = 5;
 constexpr std::size_t kStorageRecords = 64;
 constexpr std::size_t kMaxStorageKeyBytes = 128;
 constexpr std::size_t kMaxStorageStringBytes = 4096;
@@ -90,13 +96,71 @@ struct StoredValue {
     Value value;
 };
 
+bool is_ascii_space(char character) noexcept {
+    return character == ' ' || character == '\t' || character == '\r' ||
+        character == '\n' || character == '\v' || character == '\f';
+}
+
+std::string_view trim_ascii(std::string_view value) noexcept {
+    while (!value.empty() && is_ascii_space(value.front())) value.remove_prefix(1);
+    while (!value.empty() && is_ascii_space(value.back())) value.remove_suffix(1);
+    return value;
+}
+
+char ascii_lower(char character) noexcept {
+    if (character >= 'A' && character <= 'Z') return static_cast<char>(character + ('a' - 'A'));
+    return character;
+}
+
+bool ascii_case_equal(std::string_view left, std::string_view right) noexcept {
+    if (left.size() != right.size()) return false;
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        if (ascii_lower(left[index]) != ascii_lower(right[index])) return false;
+    }
+    return true;
+}
+
+std::string normalized_content_type(std::string_view value) {
+    value = trim_ascii(value.substr(0, value.find(';')));
+    std::string normalized(value);
+    for (char& character : normalized) character = ascii_lower(character);
+    return normalized;
+}
+
+std::string normalized_metadata(std::string_view value) {
+    return std::string(trim_ascii(value));
+}
+
+void validate_content_url(const std::string& url) {
+    if (url.empty() || url.size() > kMaxContentUrlBytes) {
+        throw ScriptError("HTTP content URL must contain 1..8192 bytes");
+    }
+    if (!url.starts_with("http://") && !url.starts_with("https://")) {
+        throw ScriptError("HTTP requests require an HTTP(S) URL");
+    }
+}
+
+void validate_content_request(const ContentRequest& request) {
+    if (request.method == ContentRequestMethod::get) {
+        if (!request.body.empty()) throw ScriptError("HTTP GET content request body must be empty");
+        return;
+    }
+    if (request.method == ContentRequestMethod::post) {
+        if (request.body.size() > kMaxContentBodyBytes) {
+            throw ScriptError("HTTP content request body is limited to 4096 bytes");
+        }
+        return;
+    }
+    throw ScriptError("unsupported HTTP content request method");
+}
+
 struct HttpWork {
     uint32_t request_id = 0;
-    std::string url;
+    ContentRequest request;
+    bool content = false;
     HttpResult result;
     enum class ResponseFault : uint8_t { none, too_large, allocation_failure } fault = ResponseFault::none;
 };
-
 struct QemuNetwork final {
     SemaphoreHandle_t ip_changed = nullptr;
     esp_eth_mac_t* mac = nullptr;
@@ -185,12 +249,57 @@ struct QemuNetwork final {
     }
 };
 
-esp_err_t receive_http_data(esp_http_client_event_t* event) {
-    if (event->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
-    auto& work = *static_cast<HttpWork*>(event->user_data);
+esp_err_t metadata_allocation_failure(HttpWork& work) {
+    work.fault = HttpWork::ResponseFault::allocation_failure;
+    work.result.body.clear();
+    return ESP_ERR_NO_MEM;
+}
+
+void clear_response_metadata(HttpResult& result) noexcept {
+    result.content_type.clear();
+    result.total_height.clear();
+    result.image_width.clear();
+    result.image_height.clear();
+    result.image_y.clear();
+}
+
+esp_err_t receive_http_header(esp_http_client_event_t* event, HttpWork& work) {
+    if (!work.content) return ESP_OK;
+    if (event->header_key == nullptr) return ESP_ERR_INVALID_ARG;
+    const std::string_view name(event->header_key);
+    if (!ascii_case_equal(name, "Content-Type") &&
+        !ascii_case_equal(name, "X-Microbrowser-Total-Height") &&
+        !ascii_case_equal(name, "X-Microbrowser-Width") &&
+        !ascii_case_equal(name, "X-Microbrowser-Height") &&
+        !ascii_case_equal(name, "X-Microbrowser-Y")) {
+        return ESP_OK;
+    }
+    if (event->header_value == nullptr) return ESP_ERR_INVALID_ARG;
+    const std::string_view value(event->header_value);
+    try {
+        if (ascii_case_equal(name, "Content-Type")) {
+            work.result.content_type = normalized_content_type(value);
+        } else if (ascii_case_equal(name, "X-Microbrowser-Total-Height")) {
+            work.result.total_height = normalized_metadata(value);
+        } else if (ascii_case_equal(name, "X-Microbrowser-Width")) {
+            work.result.image_width = normalized_metadata(value);
+        } else if (ascii_case_equal(name, "X-Microbrowser-Height")) {
+            work.result.image_height = normalized_metadata(value);
+        } else {
+            work.result.image_y = normalized_metadata(value);
+        }
+    } catch (const std::bad_alloc&) {
+        return metadata_allocation_failure(work);
+    }
+    return ESP_OK;
+}
+
+esp_err_t receive_http_data(esp_http_client_event_t* event, HttpWork& work) {
     if (event->data_len < 0 || (event->data_len > 0 && event->data == nullptr)) return ESP_ERR_INVALID_ARG;
     const std::size_t length = std::size_t(event->data_len);
-    if (length > kMaxResponseBytes - work.result.body.size()) {
+    if (length == 0) return ESP_OK;
+    const std::size_t limit = work.content ? kMaxContentResponseBytes : kMaxScriptResponseBytes;
+    if (length > limit - work.result.body.size()) {
         work.fault = HttpWork::ResponseFault::too_large;
         work.result.body.clear();
         return ESP_ERR_INVALID_SIZE;
@@ -198,11 +307,36 @@ esp_err_t receive_http_data(esp_http_client_event_t* event) {
     try {
         work.result.body.append(static_cast<const char*>(event->data), length);
     } catch (const std::bad_alloc&) {
-        work.fault = HttpWork::ResponseFault::allocation_failure;
-        work.result.body.clear();
-        return ESP_ERR_NO_MEM;
+        return metadata_allocation_failure(work);
     }
     return ESP_OK;
+}
+
+esp_err_t receive_http_event(esp_http_client_event_t* event) {
+    auto& work = *static_cast<HttpWork*>(event->user_data);
+    if (event->event_id == HTTP_EVENT_ON_HEADER) return receive_http_header(event, work);
+    if (event->event_id == HTTP_EVENT_ON_DATA) return receive_http_data(event, work);
+    if (event->event_id == HTTP_EVENT_ON_STATUS_CODE && work.content) {
+        clear_response_metadata(work.result);
+    }
+    return ESP_OK;
+}
+
+void capture_response_url(esp_http_client_handle_t client, HttpWork& work) {
+    try {
+        work.result.response_url.assign(kMaxContentUrlBytes + 1, '\0');
+        const esp_err_t url_error = esp_http_client_get_url(
+            client, work.result.response_url.data(), int(work.result.response_url.size()));
+        if (url_error != ESP_OK) {
+            work.result.response_url.clear();
+            work.result.error = "HTTP response error: effective URL is unavailable";
+            return;
+        }
+        work.result.response_url.resize(std::char_traits<char>::length(work.result.response_url.data()));
+    } catch (const std::bad_alloc&) {
+        work.result.response_url.clear();
+        metadata_allocation_failure(work);
+    }
 }
 
 void perform_http_request(HttpWork& work) {
@@ -212,11 +346,12 @@ void perform_http_request(HttpWork& work) {
 
     try {
         esp_http_client_config_t config = {};
-        config.url = work.url.c_str();
-        config.method = HTTP_METHOD_GET;
+        config.url = work.request.url.c_str();
+        config.method = work.content && work.request.method == ContentRequestMethod::post
+            ? HTTP_METHOD_POST : HTTP_METHOD_GET;
         config.timeout_ms = kHttpTimeoutMs;
-        config.max_redirection_count = 3;
-        config.event_handler = &receive_http_data;
+        config.max_redirection_count = work.content ? kMaxContentRedirects : kMaxScriptRedirects;
+        config.event_handler = &receive_http_event;
         config.user_data = &work;
         config.buffer_size = 2048;
         config.buffer_size_tx = 4096;
@@ -232,10 +367,20 @@ void perform_http_request(HttpWork& work) {
             ~Cleanup() { check_esp_without_abort(esp_http_client_cleanup(client), "closing HTTP client"); }
         } cleanup{client};
 
+        if (work.content && work.request.method == ContentRequestMethod::post) {
+            check_esp(esp_http_client_set_header(client, "Content-Type", "application/json"),
+                "setting HTTP content type");
+            check_esp(esp_http_client_set_post_field(client, work.request.body.data(), int(work.request.body.size())),
+                "setting HTTP content body");
+        }
         const esp_err_t error = esp_http_client_perform(client);
         work.result.status = esp_http_client_get_status_code(client);
+        if (work.content && error == ESP_OK && work.fault == HttpWork::ResponseFault::none) {
+            capture_response_url(client, work);
+        }
         if (work.fault == HttpWork::ResponseFault::too_large) {
-            work.result.error = "HTTP response exceeds the 65536-byte limit";
+            work.result.error = work.content ? "HTTP response exceeds the 2097152-byte limit"
+                                             : "HTTP response exceeds the 65536-byte limit";
         } else if (work.fault == HttpWork::ResponseFault::allocation_failure) {
             work.result.error = "HTTP response allocation failed";
         } else if (error != ESP_OK) {
@@ -255,6 +400,7 @@ struct EspIdfPlatform::State final {
     QueueHandle_t free_slots = nullptr;
     QueueHandle_t request_queue = nullptr;
     QueueHandle_t completion_queue = nullptr;
+    QueueHandle_t content_completion_queue = nullptr;
     SemaphoreHandle_t worker_done = nullptr;
     TaskHandle_t worker = nullptr;
     std::unique_ptr<QemuNetwork> network;
@@ -394,7 +540,8 @@ struct EspIdfPlatform::State final {
             if (xQueueReceive(state.request_queue, &work, portMAX_DELAY) != pdTRUE) continue;
             if (work == nullptr) break;
             perform_http_request(*work);
-            if (xQueueSend(state.completion_queue, &work, 0) != pdTRUE) {
+            const QueueHandle_t completions = work->content ? state.content_completion_queue : state.completion_queue;
+            if (xQueueSend(completions, &work, 0) != pdTRUE) {
                 ESP_LOGE(kLogTag, "HTTP completion queue overflow for request %" PRIu32, work->request_id);
                 std::abort();
             }
@@ -407,8 +554,10 @@ struct EspIdfPlatform::State final {
         free_slots = xQueueCreate(kRequestLimit, sizeof(HttpWork*));
         request_queue = xQueueCreate(kRequestLimit, sizeof(HttpWork*));
         completion_queue = xQueueCreate(kRequestLimit, sizeof(HttpWork*));
+        content_completion_queue = xQueueCreate(kRequestLimit, sizeof(HttpWork*));
         worker_done = xSemaphoreCreateBinary();
-        if (free_slots == nullptr || request_queue == nullptr || completion_queue == nullptr || worker_done == nullptr) {
+        if (free_slots == nullptr || request_queue == nullptr || completion_queue == nullptr ||
+            content_completion_queue == nullptr || worker_done == nullptr) {
             throw std::runtime_error("allocating bounded HTTP queues failed");
         }
         for (HttpWork& slot : slots) {
@@ -435,10 +584,12 @@ struct EspIdfPlatform::State final {
         if (free_slots != nullptr) vQueueDelete(free_slots);
         if (request_queue != nullptr) vQueueDelete(request_queue);
         if (completion_queue != nullptr) vQueueDelete(completion_queue);
+        if (content_completion_queue != nullptr) vQueueDelete(content_completion_queue);
         if (worker_done != nullptr) vSemaphoreDelete(worker_done);
         free_slots = nullptr;
         request_queue = nullptr;
         completion_queue = nullptr;
+        content_completion_queue = nullptr;
         worker_done = nullptr;
         if (nvs != 0) {
             nvs_close(nvs);
@@ -448,13 +599,26 @@ struct EspIdfPlatform::State final {
     }
 
     void start_request(uint32_t id, std::string url) {
-        if (url.empty() || url.size() > 2047) throw ScriptError("HTTP URL must contain 1..2047 bytes");
+        if (url.empty() || url.size() > kMaxScriptUrlBytes) {
+            throw ScriptError("HTTP URL must contain 1..2047 bytes");
+        }
+        enqueue_request(id, ContentRequest{std::move(url), ContentRequestMethod::get, std::string{}}, false);
+    }
+
+    void start_content(uint32_t id, ContentRequest request) {
+        validate_content_url(request.url);
+        validate_content_request(request);
+        enqueue_request(id, std::move(request), true);
+    }
+
+    void enqueue_request(uint32_t id, ContentRequest request, bool content) {
         HttpWork* work = nullptr;
         if (xQueueReceive(free_slots, &work, 0) != pdTRUE) {
             throw ScriptError("HTTP request queue is full (8 outstanding requests)");
         }
         work->request_id = id;
-        work->url = std::move(url);
+        work->request = std::move(request);
+        work->content = content;
         work->result = {};
         work->result.id = id;
         if (xQueueSend(request_queue, &work, 0) != pdTRUE) {
@@ -465,8 +629,16 @@ struct EspIdfPlatform::State final {
     }
 
     bool poll_request(HttpResult& result) {
+        return poll_completion(result, completion_queue);
+    }
+
+    bool poll_content(HttpResult& result) {
+        return poll_completion(result, content_completion_queue);
+    }
+
+    bool poll_completion(HttpResult& result, QueueHandle_t completions) {
         HttpWork* work = nullptr;
-        if (xQueueReceive(completion_queue, &work, 0) != pdTRUE) return false;
+        if (xQueueReceive(completions, &work, 0) != pdTRUE) return false;
         result = std::move(work->result);
         if (xQueueSend(free_slots, &work, 0) != pdTRUE) {
             ESP_LOGE(kLogTag, "HTTP slot pool overflow while consuming request %" PRIu32, result.id);
@@ -526,6 +698,14 @@ void EspIdfPlatform::start_request(uint32_t id, std::string url) {
 
 bool EspIdfPlatform::poll_request(HttpResult& result) {
     return m_state->poll_request(result);
+}
+
+void EspIdfPlatform::start_content(uint32_t id, ContentRequest request) {
+    m_state->start_content(id, std::move(request));
+}
+
+bool EspIdfPlatform::poll_content(HttpResult& result) {
+    return m_state->poll_content(result);
 }
 
 std::optional<Value> EspIdfPlatform::load_value(const std::string& name) const {

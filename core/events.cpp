@@ -1,3 +1,4 @@
+#include "url_state.h"
 #include "microbrowser/browser.h"
 #include "input.h"
 #include "paint.h"
@@ -193,7 +194,8 @@ void Browser::pointer_up(int x, int y) {
     if (target == nullptr) return;
     invalidate(*target);
     if (target->kind == NodeKind::button && hit_test(x, y) == target) {
-        invoke(target->on_press);
+        if (m_url->active()) perform_remote_action(*target);
+        else invoke(target->on_press);
     }
 }
 
@@ -245,8 +247,12 @@ void Browser::key(Key pressed) {
         const uint32_t handler = input.on_submit;
         m_focus = nullptr;
         m_show_keyboard = false;
-        invalidate_layout();
-        invoke(handler);
+        if (m_url->active()) {
+            perform_remote_action(input);
+        } else {
+            invalidate_layout();
+            invoke(handler);
+        }
         return;
     }
     case Key::escape:

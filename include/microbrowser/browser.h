@@ -10,6 +10,7 @@
 #include <string_view>
 
 namespace mb {
+struct ReaderDocument;
 
 enum class Key : uint8_t { backspace, enter, left, right, home, end_key, escape, toggle_stats };
 
@@ -34,9 +35,14 @@ struct Damage {
 
 class Browser final : private VmHost {
 public:
-    Browser(Platform& platform, Size size);
-    void load(std::vector<uint8_t> bytes);
+    Browser(Platform& platform, Size size, std::string gateway_url = "http://127.0.0.1:8765");
+    ~Browser();
     void resize(Size size);
+    void load(std::vector<uint8_t> bytes);
+    void open_url(std::string url, bool remember = true);
+    // Explicit consent to gateway-executed browser content; ordinary URLs use Reader.
+    void open_interactive_url(std::string url);
+    void navigate_back();
 
     // tick is called by the application loop. true means damage() must be presented.
     bool tick();
@@ -45,6 +51,8 @@ public:
     [[nodiscard]] const Damage& damage() const { return m_frame_damage; }
     [[nodiscard]] std::string_view page_name() const;
     [[nodiscard]] std::string_view last_error() const { return m_error; }
+    [[nodiscard]] std::string_view location() const;
+    [[nodiscard]] std::string_view content_mode() const;
     [[nodiscard]] const Metrics& metrics() const { return m_metrics; }
 
     void pointer_down(int x, int y);
@@ -57,6 +65,7 @@ public:
     void dispatch(std::string_view function_name);
 
 private:
+    struct UrlState;
     struct Animation {
         enum class Property : uint8_t { none, scale, opacity, offset_y };
     };
@@ -89,6 +98,8 @@ private:
     Package m_package;
     std::vector<Value> m_state;
     std::vector<uint16_t> m_pixels;
+    std::unique_ptr<UrlState> m_url;
+    std::string m_storage_prefix;
     std::vector<Rect> m_pending_regions;
     Damage m_frame_damage{};
     Page* m_page = nullptr;
@@ -137,6 +148,19 @@ private:
     void apply_scroll_drag();
     void changed(Node& node);
     void open_page(std::string_view name, bool remember);
+    void perform_remote_action(Node& node);
+    void process_content_requests();
+    void queue_visible_images();
+    enum class NativePackageIntent : uint8_t { review, confirmed };
+    void open_reader_url(const std::string& url, bool interactive, bool remember,
+        NativePackageIntent package_intent = NativePackageIntent::review);
+    void apply_package(const std::vector<uint8_t>& bytes);
+    void clear_url_view(bool forget_history);
+    void install_reader_page(ReaderDocument document, const std::string& address);
+    void fail_url_load(const std::string& message);
+    void receive_image(std::size_t index, HttpResult&& result);
+    void enqueue_image(std::size_t index);
+    void receive_transfer(HttpResult&& result);
     void open_page_index(uint32_t page, bool remember);
     void invoke(uint32_t function);
     void handle_error(std::string_view message);

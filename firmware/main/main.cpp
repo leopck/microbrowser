@@ -42,9 +42,10 @@ constexpr TouchPoint kScrollTo{400, 40};
 constexpr int kUpwardDragsToBottom = 4;
 constexpr TouchPoint kSelftestButtonCenter{240, 120};
 constexpr TouchPoint kSelftestButtonPixel{40, 112};
-constexpr std::size_t kMaximumCommandBytes = 96;
+constexpr std::size_t kMaximumCommandBytes = 2051;
 constexpr std::size_t kMaximumUartBytesPerPoll = 64;
 constexpr uint32_t kApplicationPeriodMs = 10;
+constexpr std::size_t kUartReceiveBufferBytes = 4096;
 
 void check_esp(esp_err_t error, std::string_view operation) {
     if (error == ESP_OK) return;
@@ -153,7 +154,9 @@ void print_ready(const mb::Browser& browser, const mb::EspIdfPlatform& platform)
         print_length(page), page.data(), metrics.node_count, metrics.frames, internal_heap_free(),
         internal_heap_minimum_free(), heap_caps_get_total_size(MALLOC_CAP_SPIRAM),
         heap_caps_get_free_size(MALLOC_CAP_SPIRAM), platform.network_online() ? "online" : "offline", main_stack_minimum_free_bytes());
-    std::printf("UART commands: call NAME | page | stats | selftest (maximum %zu bytes per line)\n", kMaximumCommandBytes);
+    std::printf("UART commands: call NAME | url URL | page | stats | selftest (maximum %zu bytes per line)\n", kMaximumCommandBytes);
+    std::printf("MODE value=%.*s location=%.*s\n", print_length(browser.content_mode()), browser.content_mode().data(),
+        print_length(browser.location()), browser.location().data());
     std::fflush(stdout);
 }
 
@@ -231,7 +234,7 @@ public:
     UartCommands(mb::Browser& browser, QemuDisplay& display, mb::EspIdfPlatform& platform)
         : m_browser(browser), m_display(display), m_platform(platform) {
         if (!uart_is_driver_installed(UART_NUM_0)) {
-            check_esp(uart_driver_install(UART_NUM_0, 256, 0, 0, nullptr, 0), "installing UART0 command input");
+            check_esp(uart_driver_install(UART_NUM_0, kUartReceiveBufferBytes, 0, 0, nullptr, 0), "installing UART0 command input");
         }
     }
 
@@ -301,6 +304,19 @@ private:
             }
             return;
         }
+        constexpr std::string_view url_prefix = "url ";
+        if (line.starts_with(url_prefix) && line.size() > url_prefix.size()) {
+            const std::string url(line.substr(url_prefix.size()));
+            try {
+                m_browser.open_url(url);
+                if (!m_browser.last_error().empty()) throw std::runtime_error(std::string(m_browser.last_error()));
+                render_once(m_browser, m_display);
+                std::printf("URL QUEUED\n");
+            } catch (const std::exception& error) {
+                std::printf("COMMAND FAIL url reason=%s\n", error.what());
+            }
+            return;
+        }
         if (line.empty()) {
             std::printf("COMMAND FAIL reason=empty command\n");
         } else if (line == "call " || line == "call") {
@@ -332,7 +348,7 @@ std::vector<uint8_t> packaged_dashboard() {
     mb::EspIdfPlatform platform;
     QemuDisplay display;
     ESP_LOGI(kLogTag, "initializing the RGB565 framebuffer");
-    mb::Browser browser(platform, kScreenSize);
+    mb::Browser browser(platform, kScreenSize, CONFIG_MB_GATEWAY_URL);
     browser.load(packaged_dashboard());
     ESP_LOGI(kLogTag, "starting virtual Ethernet");
     platform.start_network();

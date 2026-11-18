@@ -41,6 +41,12 @@ const std::string& storage_key(std::span<const Value> arguments) {
     return key;
 }
 
+std::string application_key(const std::string& prefix, const std::string& key) {
+    if (prefix.empty()) return key;
+    if (prefix.size() + key.size() > 128) throw ScriptError("application-scoped storage key exceeds 128 bytes");
+    return prefix + key;
+}
+
 } // namespace
 
 Value Browser::builtin(uint8_t id, std::span<const Value> arguments) {
@@ -72,11 +78,15 @@ Value Browser::builtin(uint8_t id, std::span<const Value> arguments) {
     if (id == 7 || id == 8) {
         if (id == 7) {
             arity(arguments, 1, "go");
-            open_page(argument(arguments, 0, Value::Type::string, "go").string, true);
+            const std::string& destination = argument(arguments, 0, Value::Type::string, "go").string;
+            if (destination.starts_with("http://") || destination.starts_with("https://")) {
+                open_url(destination);
+            } else {
+                open_page(destination, true);
+            }
         } else {
             arity(arguments, 0, "back");
-            if (m_history_size == 0) throw ScriptError("navigation history is empty");
-            open_page_index(m_history[--m_history_size], false);
+            navigate_back();
         }
         throw Navigation{};
     }
@@ -134,11 +144,11 @@ Value Browser::builtin(uint8_t id, std::span<const Value> arguments) {
         const std::string& key = storage_key(arguments);
         if (store) {
             arity(arguments, 2, "save");
-            m_platform.save_value(key, argument(arguments, 1, type, "save"));
+            m_platform.save_value(application_key(m_storage_prefix, key), argument(arguments, 1, type, "save"));
             return Value::from_void();
         }
         arity(arguments, 2, "load");
-        std::optional<Value> saved = m_platform.load_value(key);
+        std::optional<Value> saved = m_platform.load_value(application_key(m_storage_prefix, key));
         if (!saved) return argument(arguments, 1, type, "load fallback");
         if (saved->type != type) throw ScriptError("saved value type differs from load type");
         return std::move(*saved);
@@ -176,10 +186,10 @@ Value Browser::builtin(uint8_t id, std::span<const Value> arguments) {
         arity(arguments, 2, id == 19 ? "save_string" : "load_string");
         const std::string& value = argument(arguments, 1, Value::Type::string, "string storage").string;
         if (id == 19) {
-            m_platform.save_value(key, Value::from_string(value));
+            m_platform.save_value(application_key(m_storage_prefix, key), Value::from_string(value));
             return Value::from_void();
         }
-        std::optional<Value> saved = m_platform.load_value(key);
+        std::optional<Value> saved = m_platform.load_value(application_key(m_storage_prefix, key));
         if (!saved) return Value::from_string(value);
         if (saved->type != Value:: Type::string) throw ScriptError("saved value is not a string");
         return std::move(*saved);

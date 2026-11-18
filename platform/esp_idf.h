@@ -24,6 +24,8 @@ public:
     [[nodiscard]] uint64_t now_ms() const override;
     void start_request(uint32_t id, std::string url) override;
     [[nodiscard]] bool poll_request(HttpResult& result) override;
+    void start_content(uint32_t id, ContentRequest request) override;
+    [[nodiscard]] bool poll_content(HttpResult& result) override;
 
     [[nodiscard]] std::optional<Value> load_value(const std::string& name) const override;
     void save_value(const std::string& name, const Value& value) override;

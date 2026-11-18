@@ -1,5 +1,9 @@
 #include "microbrowser/json.h"
 
+#include "microbrowser/package.h"
+
+#include "reader.h"
+
 #include <charconv>
 #include <cmath>
 #include <cstddef>
@@ -7,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace mb {
@@ -454,6 +459,325 @@ const JsonValue& resolve_path(const JsonValue& root, std::string_view path) {
     return *current;
 }
 
+constexpr std::size_t max_reader_title_bytes = 512;
+constexpr std::size_t max_reader_url_bytes = 2'047;
+constexpr std::size_t max_reader_session_bytes = 256;
+constexpr std::size_t max_reader_blocks = 256;
+constexpr std::size_t max_reader_block_text_bytes = 8'192;
+constexpr std::size_t max_reader_total_text_bytes = 24'000;
+constexpr std::size_t max_reader_unsupported_reason_bytes = 512;
+constexpr int max_reader_image_dimension = 16'384;
+
+enum class NullPolicy : uint8_t { rejected, allowed };
+
+[[nodiscard]] bool ascii_iequals(std::string_view left, std::string_view right) {
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        unsigned char a = static_cast<unsigned char>(left[index]);
+        unsigned char b = static_cast<unsigned char>(right[index]);
+        if (a >= 'A' && a <= 'Z') {
+            a = static_cast<unsigned char>(a - 'A' + 'a');
+        }
+        if (b >= 'A' && b <= 'Z') {
+            b = static_cast<unsigned char>(b - 'A' + 'a');
+        }
+        if (a != b) {
+            return false;
+        }
+    }
+    return true;
+}
+
+class ReaderJsonConverter {
+public:
+    ReaderDocument convert(const JsonValue& root) const {
+        require_object(root, "$");
+
+        ReaderDocument result;
+        if (required_string(root, "$", "format") != "microbrowser-reader-v1") {
+            fail_field("$", "format", "must be exactly 'microbrowser-reader-v1'");
+        }
+
+        const std::string kind = required_string(root, "$", "kind");
+        if (kind == "article") {
+            result.kind = ReaderKind::article;
+        } else if (kind == "manga") {
+            result.kind = ReaderKind::manga;
+        } else if (kind == "unsupported") {
+            result.kind = ReaderKind::unsupported;
+        } else {
+            fail_field("$", "kind", "unknown reader document kind '" + kind + "'");
+        }
+
+        const std::string mode = required_string(root, "$", "mode");
+        if (mode == "reader") {
+            result.mode = ReaderMode::reader;
+        } else if (mode == "interactive") {
+            result.mode = ReaderMode::interactive;
+        } else {
+            fail_field("$", "mode", "unknown reader document mode '" + mode + "'");
+        }
+
+        result.title = bounded_required_string(root, "$", "title", max_reader_title_bytes);
+        result.source_url = bounded_required_string(root, "$", "source_url", max_reader_url_bytes);
+        require_url(result.source_url, "$", "source_url");
+        result.previous_url = bounded_optional_string(root, "$", "previous_url",
+                                                      max_reader_url_bytes, NullPolicy::allowed);
+        if (result.previous_url) {
+            require_url(*result.previous_url, "$", "previous_url");
+        }
+        result.next_url = bounded_optional_string(root, "$", "next_url",
+                                                  max_reader_url_bytes, NullPolicy::allowed);
+        if (result.next_url) {
+            require_url(*result.next_url, "$", "next_url");
+        }
+        result.session = bounded_optional_string(root, "$", "session",
+                                                 max_reader_session_bytes, NullPolicy::allowed);
+        if (result.mode == ReaderMode::interactive &&
+            (!result.session || result.session->empty())) {
+            fail_field("$", "session", "interactive documents require a nonempty session");
+        }
+
+        if (const JsonValue* available = member(root, "$", "interactive_available")) {
+            if (available->type != JsonValue::Type::boolean) {
+                fail_field("$", "interactive_available", "expected boolean");
+            }
+            result.interactive_available = available->boolean;
+        }
+        result.unsupported_reason = bounded_optional_string(
+            root, "$", "unsupported_reason", max_reader_unsupported_reason_bytes,
+            NullPolicy::rejected);
+        result.blocks = convert_blocks(required_member(root, "$", "blocks"));
+        return result;
+    }
+
+private:
+    [[noreturn]] static void fail(std::string_view path, const std::string& message) {
+        throw PackageError("reader document " + std::string(path) + ": " + message);
+    }
+
+    [[noreturn]] static void fail_field(std::string_view object_path, std::string_view key,
+                                        const std::string& message) {
+        fail(std::string(object_path) + "." + std::string(key), message);
+    }
+
+    static void require_object(const JsonValue& value, std::string_view path) {
+        if (value.type != JsonValue::Type::object) {
+            fail(path, "expected object");
+        }
+    }
+
+    static const JsonValue* member(const JsonValue& object, std::string_view object_path,
+                                   std::string_view key) {
+        const JsonValue* result = nullptr;
+        for (std::size_t index = 0; index < object.keys.size(); ++index) {
+            if (object.keys[index] != key) {
+                continue;
+            }
+            if (result != nullptr) {
+                fail_field(object_path, key, "duplicate object member");
+            }
+            result = &object.children[index];
+        }
+        return result;
+    }
+
+    static const JsonValue& required_member(const JsonValue& object,
+                                            std::string_view object_path,
+                                            std::string_view key) {
+        const JsonValue* value = member(object, object_path, key);
+        if (value == nullptr) {
+            fail_field(object_path, key, "is required");
+        }
+        return *value;
+    }
+
+    static std::string required_string(const JsonValue& object, std::string_view object_path,
+                                       std::string_view key) {
+        const JsonValue& value = required_member(object, object_path, key);
+        if (value.type != JsonValue::Type::string) {
+            fail_field(object_path, key, "expected string");
+        }
+        return value.string;
+    }
+
+    static std::optional<std::string> optional_string(const JsonValue& object,
+                                                      std::string_view object_path,
+                                                      std::string_view key,
+                                                      NullPolicy null_policy) {
+        const JsonValue* value = member(object, object_path, key);
+        const bool null_allowed = null_policy == NullPolicy::allowed;
+        if (value == nullptr || (null_allowed && value->type == JsonValue::Type::null_value)) {
+            return std::nullopt;
+        }
+        if (value->type != JsonValue::Type::string) {
+            fail_field(object_path, key, "expected string" +
+                       std::string(null_allowed ? " or null" : ""));
+        }
+        return value->string;
+    }
+
+    static void require_size(std::string_view value, std::size_t maximum,
+                             std::string_view object_path, std::string_view key) {
+        if (value.size() > maximum) {
+            fail_field(object_path, key, "exceeds " + std::to_string(maximum) + " UTF-8 bytes");
+        }
+    }
+
+    static std::string bounded_required_string(const JsonValue& object,
+                                               std::string_view object_path,
+                                               std::string_view key, std::size_t maximum) {
+        std::string result = required_string(object, object_path, key);
+        require_size(result, maximum, object_path, key);
+        return result;
+    }
+
+    static std::optional<std::string> bounded_optional_string(
+        const JsonValue& object, std::string_view object_path, std::string_view key,
+        std::size_t maximum, NullPolicy null_policy) {
+        std::optional<std::string> result = optional_string(object, object_path, key, null_policy);
+        if (result) {
+            require_size(*result, maximum, object_path, key);
+        }
+        return result;
+    }
+
+    static void require_url(std::string_view url, std::string_view object_path,
+                            std::string_view key) {
+        if (url.empty()) {
+            fail_field(object_path, key, "must be nonempty");
+        }
+        validate_url(url, object_path, key);
+    }
+
+    static void validate_url(std::string_view url, std::string_view object_path,
+                             std::string_view key) {
+        if (url.empty()) {
+            return;
+        }
+        for (const unsigned char byte : url) {
+            if (byte <= 0x20U || byte == 0x7fU) {
+                fail_field(object_path, key, "contains whitespace or a control character");
+            }
+        }
+
+        const std::size_t colon = url.find(':');
+        const std::size_t delimiter = url.find_first_of("/?#");
+        if (colon == std::string_view::npos ||
+            (delimiter != std::string_view::npos && delimiter < colon)) {
+            return;
+        }
+        const std::string_view scheme = url.substr(0, colon);
+        bool valid_scheme = !scheme.empty() &&
+            ((scheme.front() >= 'A' && scheme.front() <= 'Z') ||
+             (scheme.front() >= 'a' && scheme.front() <= 'z'));
+        for (const char character : scheme.substr(valid_scheme ? 1 : 0)) {
+            const bool alphanumeric = (character >= 'A' && character <= 'Z') ||
+                (character >= 'a' && character <= 'z') ||
+                (character >= '0' && character <= '9');
+            valid_scheme = valid_scheme && (alphanumeric || character == '+' ||
+                                            character == '-' || character == '.');
+        }
+        if (!valid_scheme) {
+            fail_field(object_path, key, "has an invalid URL scheme");
+        }
+        if (!ascii_iequals(scheme, "http") && !ascii_iequals(scheme, "https")) {
+            fail_field(object_path, key, "URL scheme must be HTTP or HTTPS");
+        }
+    }
+
+    static std::optional<int> optional_dimension(const JsonValue& object,
+                                                 std::string_view object_path,
+                                                 std::string_view key) {
+        const JsonValue* value = member(object, object_path, key);
+        if (value == nullptr) {
+            return std::nullopt;
+        }
+        if (value->type != JsonValue::Type::number) {
+            fail_field(object_path, key, "expected number");
+        }
+        if (std::trunc(value->number) != value->number || value->number < 1.0F ||
+            value->number > float(max_reader_image_dimension)) {
+            fail_field(object_path, key, "must be a positive integer no greater than 16384");
+        }
+        return static_cast<int>(value->number);
+    }
+
+    static std::vector<ReaderBlock> convert_blocks(const JsonValue& value) {
+        if (value.type != JsonValue::Type::array) {
+            fail("$.blocks", "expected array");
+        }
+        if (value.children.size() > max_reader_blocks) {
+            fail("$.blocks", "contains more than 256 blocks");
+        }
+
+        std::vector<ReaderBlock> result;
+        result.reserve(value.children.size());
+        std::size_t total_text_bytes = 0;
+        for (std::size_t index = 0; index < value.children.size(); ++index) {
+            const std::string path = "$.blocks[" + std::to_string(index) + "]";
+            const JsonValue& item = value.children[index];
+            require_object(item, path);
+            result.push_back(convert_block(item, path, total_text_bytes));
+        }
+        return result;
+    }
+
+    static ReaderBlock convert_block(const JsonValue& item, const std::string& path,
+                                     std::size_t& total_text_bytes) {
+        ReaderBlock result;
+        const std::string type = required_string(item, path, "type");
+        bool text_required = true;
+        bool url_required = false;
+        if (type == "heading") {
+            result.kind = ReaderBlockKind::heading;
+        } else if (type == "paragraph") {
+            result.kind = ReaderBlockKind::paragraph;
+        } else if (type == "text") {
+            result.kind = ReaderBlockKind::notice;
+        } else if (type == "link") {
+            result.kind = ReaderBlockKind::link;
+            text_required = false;
+            url_required = true;
+        } else if (type == "image") {
+            result.kind = ReaderBlockKind::image;
+            text_required = false;
+            url_required = true;
+        } else {
+            fail_field(path, "type", "unknown reader block type '" + type + "'");
+        }
+
+        if (text_required) {
+            result.text = bounded_required_string(item, path, "text",
+                                                  max_reader_block_text_bytes);
+        } else if (std::optional<std::string> text = bounded_optional_string(
+                       item, path, "text", max_reader_block_text_bytes, NullPolicy::rejected)) {
+            result.text = std::move(*text);
+        }
+        if (result.text.size() > max_reader_total_text_bytes - total_text_bytes) {
+            fail_field(path, "text", "total block text exceeds 24000 UTF-8 bytes");
+        }
+        total_text_bytes += result.text.size();
+
+        if (url_required) {
+            result.url = bounded_required_string(item, path, "url", max_reader_url_bytes);
+        } else if (std::optional<std::string> url = bounded_optional_string(
+                       item, path, "url", max_reader_url_bytes, NullPolicy::rejected)) {
+            result.url = std::move(*url);
+        }
+        if (url_required) {
+            require_url(result.url, path, "url");
+        } else {
+            validate_url(result.url, path, "url");
+        }
+        result.width = optional_dimension(item, path, "width");
+        result.height = optional_dimension(item, path, "height");
+        return result;
+    }
+};
+
 } // namespace
 
 Value read_json_scalar(std::string_view document, std::string_view path,
@@ -493,6 +817,18 @@ Value read_json_scalar(std::string_view document, std::string_view path,
         break;
     }
     return result;
+}
+
+ReaderDocument parse_reader_document(std::string_view json) {
+    if (json.size() > max_json_bytes) {
+        throw PackageError("JSON document exceeds 64 KiB");
+    }
+    try {
+        const JsonValue root = JsonParser(json).parse();
+        return ReaderJsonConverter().convert(root);
+    } catch (const ScriptError& error) {
+        throw PackageError(error.what());
+    }
 }
 
 } // namespace mb

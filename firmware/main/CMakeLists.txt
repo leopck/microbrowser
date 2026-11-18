@@ -19,6 +19,8 @@ idf_component_register(
         "${MICROBROWSER_ROOT}/core/text_layout.cpp"
         "${MICROBROWSER_ROOT}/core/json.cpp"
         "${MICROBROWSER_ROOT}/core/types.cpp"
+        "${MICROBROWSER_ROOT}/core/reader_page.cpp"
+        "${MICROBROWSER_ROOT}/core/url_navigation.cpp"
     INCLUDE_DIRS
         "${MICROBROWSER_ROOT}/include"
         "${MICROBROWSER_ROOT}/platform"

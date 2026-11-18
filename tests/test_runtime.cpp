@@ -123,6 +123,10 @@ struct TestPlatform final : mb::Platform {
         completed.erase(completed.begin());
         return true;
     }
+    void start_content(uint32_t id, mb::ContentRequest request) override {
+        url = std::move(request.url);
+    }
+    bool poll_content(mb::HttpResult&) override { return false; }
     std::optional<mb::Value> load_value(const std::string& name) const override {
         const auto found = values.find(name);
         if (found == values.end()) return std::nullopt;
@@ -521,6 +525,17 @@ void test_vm_and_json() {
     expect_script_error([&] { (void)mb::read_json_scalar("{} trailing", "", mb::Value::Type::string); });
 }
 
+void test_framebuffer_initialization() {
+    TestPlatform platform;
+    mb::Browser browser(platform, {64, 64});
+    const std::size_t pixels = std::size_t(browser.screen_size().width) *
+        std::size_t(browser.screen_size().height);
+    REQUIRE(browser.pixels() != nullptr);
+    for (std::size_t index = 0; index < pixels; ++index) {
+        CHECK(browser.pixels()[index] == mb::to_rgb565(mb::palette::background));
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -529,6 +544,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     try {
+        test_framebuffer_initialization();
         TestPlatform dashboard_platform;
         mb::Browser dashboard(dashboard_platform, {480, 320});
         dashboard.load(mb::read_package_file(argv[1]));

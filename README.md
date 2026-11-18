@@ -2,9 +2,9 @@
 
 # Microbrowser
 
-**Browser-style interactive apps for microcontrollers.**<br>
-Write pages in markup, style them with classes and script them with a small typed language.<br>
-The host compiler packs them into a verified binary bundle that an ESP32-S3 renders without V8, a DOM or a runtime parser.
+**Interactive apps and bounded web reading for ESP32-S3.**<br>
+Write native applications in markup and a small typed language, or read public web pages through a trusted local gateway.<br>
+Run on desktop, in full ESP32-S3 QEMU, or on your own panel—without V8 or a full browser DOM on the device.
 
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white)
 ![ESP-IDF 6.1](https://img.shields.io/badge/ESP--IDF-6.1-E7352C?logo=espressif&logoColor=white)
@@ -19,6 +19,7 @@ The host compiler packs them into a verified binary bundle that an ESP32-S3 rend
 Regenerate it with <code>tools/capture_screenshots.py</code>.</sub>
 
 [Quick start](#quick-start) ·
+[Open a website](#open-a-website) ·
 [Hello, counter](#hello-counter) ·
 [Features](#features) ·
 [Architecture](#architecture) ·
@@ -43,7 +44,7 @@ Modern browser engines need hundreds of megabytes. A microcontroller has a few h
 | Rasterize Inter into glyph tables | Draw antialiased text; no font engine |
 | Validate size and structural limits | Repaint only damaged regions |
 
-The result is an **authored-application browser**. It does not load arbitrary websites; see [Scope](#scope).
+The preferred format is an **authored-application browser**. For existing HTML pages, the separate [Reader gateway](gateway/README.md) extracts bounded text and images; Interactive mode executes JavaScript only in the explicitly opted-in gateway browser, never on the ESP32.
 
 ## Gallery
 
@@ -58,7 +59,7 @@ The result is an **authored-application browser**. It does not load arbitrary we
   </tr>
   <tr>
     <td align="center"><img src="docs/screenshots/qemu-dashboard.png" width="320" alt="Dashboard captured from the emulated ESP32-S3 LCD"><br><sub>The same package on an emulated ESP32-S3 virtual LCD</sub></td>
-    <td align="center"><img src="docs/screenshots/counter.png" width="320" alt="Counter tutorial application"><br><sub>The tutorial counter app from the authoring guide</sub></td>
+    <td align="center"><img src="docs/screenshots/web-reader.png" width="320" alt="Public web page in Reader on the emulated ESP32-S3"><br><sub>An actual HTTPS page converted to Reader and rendered by QEMU</sub></td>
   </tr>
 </table>
 
@@ -126,6 +127,28 @@ python3 tools/mbc inspect build/counter.mbp                    # validate and su
 
 Assigning to `state.value` repaints only the widgets bound to it. Compile errors report `file:line:column`. The [authoring guide](docs/authoring.md) builds the full two-page version step by step, including settings, navigation and persistence.
 
+## Open a website
+
+Start the trusted gateway in one terminal, then open the desktop browser in another:
+
+```sh
+make gateway
+```
+
+```sh
+# Reader by default: bounded text, links and preconverted RGB565 image strips.
+./build/microbrowser --url https://example.com
+
+# Opt in to JavaScript execution inside the gateway's isolated browser context.
+./build/microbrowser --url https://example.com --events your-interactive.events
+```
+
+An interactive replay contains `interactive https://example.com`, `wait 6000`, then `shot build/interactive.ppm`. The local gateway defaults to `http://127.0.0.1:8765`. Ordinary URL loading never executes website JavaScript on the device and never downloads a native application implicitly. A remote `.mbp` file requires its own explicit Run confirmation; abandon it, and no package is fetched.
+
+Links and previous/next navigation work inside Reader. Responsive checkpoints and image strips are fetched on demand within bounded memory. Reader is not full HTML/CSS compatibility; custom layout and scripts are intentionally excluded. Interactive mode runs JavaScript on the gateway and returns links and extracted content, subject to the [security and feature limits](gateway/README.md).
+
+To publish static reading pages, use `tools/publish_reader.py`; its `.mbr.json` documents and links can be loaded directly over HTTPS without the gateway. External images still require the configured gateway unless the image host returns the native RGB565 strip format. See the [hosting and Reader protocol](gateway/README.md).
+
 ## Features
 
 **UI**
@@ -171,7 +194,7 @@ flowchart LR
   PAINT --> ESP["platform/esp_idf.cpp<br/>esp_lcd · NVS · esp_http_client"]
 ```
 
-The `Platform` interface ([`include/microbrowser/platform.h`](include/microbrowser/platform.h)) is the porting boundary. It provides the clock, logging, storage and asynchronous HTTP; the rest of `core/` is identical on desktop and device.
+The `Platform` interface ([`include/microbrowser/platform.h`](include/microbrowser/platform.h)) is the porting boundary. It provides the clock, logging, storage and asynchronous HTTP; the rest of `core/` is identical on desktop and device. This diagram shows native applications. Reader content bypasses `mbc`: `core/url_navigation.cpp` fetches `microbrowser-reader-v1` JSON through the gateway or a static `.mbr.json` URL, then `core/json.cpp` validates its fields before native layout and drawing.
 
 **Rendering model.** State writes, animations, caret blinks and presses add regions to a damage list of at most 32 rectangles. Each `tick()` repaints only those regions into the RGB565 framebuffer, and the platform pushes only those regions to the display. Layout runs again only after structural changes such as navigation, scrolling or auto-sized text changes.
 
@@ -182,10 +205,10 @@ Measured with the bundled climate dashboard (3 pages, 141 nodes, 29 functions):
 | Metric | Value | Source |
 |---|---|---|
 | Compiled package | 15,581 bytes | `mbc build` |
-| Internal heap free after start | 216,923 bytes | QEMU `MICROBROWSER_QEMU_READY` |
-| Internal heap low-water mark | 179,872 bytes | same |
+| Internal heap free after self-test | 199,143 bytes | QEMU `stats` after dashboard self-test |
+| Internal heap low-water mark | 158,568 bytes | same |
 | Framebuffer, 480×320 RGB565 | 307,200 bytes in PSRAM | runtime report |
-| Main-task stack headroom | 6,240 bytes | same |
+| Main-task stack headroom | 4,064 bytes | same |
 | Desktop layout pass | ~0.1 ms | `--headless` report on an Apple-silicon host |
 
 QEMU and desktop timings are not ESP32 performance claims. Measure frame rate on your target panel; on SPI displays, the bus is usually the limit. `--spi-hz` estimates that ceiling.
@@ -199,7 +222,7 @@ export IDF_PATH=/path/to/esp-idf
 make qemu
 ```
 
-This builds the dashboard package and firmware, then boots an emulated ESP32-S3 with 8 MiB PSRAM and a 480×320 virtual LCD. Over UART, it drives navigation, scrolling, persistence and the app's self-test. It then saves the LCD as `build/qemu-dashboard.ppm`.
+This builds the dashboard package and firmware, then boots an emulated ESP32-S3 with 8 MiB PSRAM and a 480×320 virtual LCD. Over UART, it drives navigation, scrolling, persistence and the app's self-test. It then saves the LCD as `build/qemu-dashboard.ppm`. The same display path has also been verified with a public HTTPS Reader page using `build/qemu-web-reader.ppm`.
 
 | Command | Purpose |
 |---|---|
@@ -214,6 +237,7 @@ This builds the dashboard package and firmware, then boots an emulated ESP32-S3 
 ```sh
 make test   # compiler unit tests, C++ runtime tests and headless UI replays
 make qemu   # embedded build plus emulator interaction and LCD capture
+make web-test  # make test, then gateway unit and real-Chromium integration tests
 ```
 
 `make test` replays [`tests/dashboard.events`](tests/dashboard.events) and [`tests/counter.events`](tests/counter.events). These scripts simulate real clicks, drags and typing against the compiled packages and fail on any script error or self-test failure. Write your own with `click`, `down`, `move`, `up`, `text`, `key`, `scroll`, `call`, `wait` and `shot`:
@@ -227,14 +251,15 @@ To refresh the desktop screenshots and `demo.gif` from real replays, install Pil
 
 ## Scope
 
-Microbrowser is **not** a web browser for existing sites. It has no HTML/CSS/JS compatibility, DOM, selectors, `eval` or arbitrary URL loading. These limits make it small and predictable:
+Microbrowser does not promise full HTML/CSS/JavaScript compatibility, a browser DOM, selectors or `eval` on the ESP32. Public web pages use the bounded Reader representation; website JavaScript runs only in the explicitly selected gateway browser. These constraints keep native applications small and predictable:
 
-- Every app is compiled ahead of time; the device never parses source text.
-- Script runs only in response to events and timers, under fixed instruction and memory budgets.
+- Every native app is compiled ahead of time from its `.mb` source; downloading a reader document never installs or executes script.
+- App script runs only in response to events and timers, under fixed instruction and memory budgets.
 - Element IDs are scoped to the current page, and widgets bind only to declared, typed state.
-- The bundled glyph set is fixed; unsupported characters render as `?`.
+- Website loading is bounded by URL, document, link, text, image and in-flight-request limits.
+- The bundled glyph set is fixed; unbundled Unicode characters render as `?`.
 
-The limits and rationale are documented in the [authoring guide](docs/authoring.md).
+The limits and rationale are documented in the [authoring guide](docs/authoring.md), [gateway guide](gateway/README.md) and [package format](docs/package-format.md).
 
 ## Repository layout
 
@@ -244,6 +269,7 @@ The limits and rationale are documented in the [authoring guide](docs/authoring.
 | [`platform/`](platform/) | Desktop (SDL2/libcurl), headless event replay and ESP-IDF platform implementations |
 | [`tools/mbc/`](tools/mbc/) | Compiler and inspector (`python3 tools/mbc`) |
 | [`tools/`](tools/) | QEMU smoke test, screenshot capture and font-table generator |
+| [`gateway/`](gateway/) | Trusted Reader conversion, RGB565 image extraction and consented Chromium navigation |
 | [`examples/`](examples/) | Climate dashboard and counter tutorial apps |
 | [`firmware/`](firmware/) | ESP-IDF project for ESP32-S3 |
 | [`tests/`](tests/) | Compiler, runtime, font and replay tests |
@@ -254,7 +280,7 @@ The limits and rationale are documented in the [authoring guide](docs/authoring.
 
 Issues and pull requests are welcome. Before you open a pull request:
 
-1. Run `make test`; run `make qemu` too if you changed `core/`, `platform/esp_idf.cpp` or `firmware/`.
+1. Run `make web-test`; run `make qemu` too if you changed `core/`, `platform/esp_idf.cpp` or `firmware/`.
 2. Add or update a replay in `tests/*.events` for user-visible behavior.
 3. If you changed the language or binary layout, update [`docs/authoring.md`](docs/authoring.md) or [`docs/package-format.md`](docs/package-format.md).
 4. If your change affects UI output, run `tools/capture_screenshots.py`.
@@ -266,6 +292,7 @@ Generated font data in `core/font_data.cpp` is produced by `tools/build_fonts.py
 - [Inter](https://github.com/rsms/inter) by Rasmus Andersson, used under the SIL Open Font License 1.1
 - [ESP-IDF](https://github.com/espressif/esp-idf) and [Espressif QEMU](https://github.com/espressif/qemu)
 - [SDL2](https://www.libsdl.org/) and [libcurl](https://curl.se/libcurl/) for the desktop runtime
+- [Playwright](https://playwright.dev/python/) and [Pillow](https://python-pillow.org/) for optional gateway JavaScript execution and image conversion
 
 ## License
 

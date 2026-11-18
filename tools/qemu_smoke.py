@@ -42,7 +42,8 @@ def prepare_flash(repository: Path, build: Path) -> Path:
 
 
 class QemuProcess:
-    def __init__(self, repository: Path, screenshot: Path, show_window: bool, timeout_s: float) -> None:
+    def __init__(self, repository: Path, screenshot: Path, show_window: bool, timeout_s: float,
+                 *, website: tuple[str, str] | None = None) -> None:
         if shutil.which("qemu-system-xtensa") is None:
             missing_tool("qemu-system-xtensa")
         flash = prepare_flash(repository, repository / "firmware" / "build")
@@ -67,6 +68,7 @@ class QemuProcess:
         )
         self.output = bytearray()
         self.timeout_s = timeout_s
+        self.website = website
 
     def wait_text(self, tokens: bytes | tuple[bytes, ...]) -> None:
         expected_tokens = (tokens,) if isinstance(tokens, bytes) else tokens
@@ -109,6 +111,31 @@ class QemuProcess:
             self.process.kill()
             self.process.wait(timeout=5)
 
+    def open_website(self) -> None:
+        if self.website is None:
+            return
+        url, expected_page = self.website
+        self.output.clear()
+        self.send(f"url {url}\n")
+        self.wait_text((b"URL QUEUED", b"COMMAND FAIL"))
+        if b"COMMAND FAIL" in self.output:
+            raise RuntimeError("UART URL command was rejected")
+        expected = f"PAGE name={expected_page} error_present=0".encode()
+        deadline = time.monotonic() + self.timeout_s
+        while True:
+            self.output.clear()
+            self.send("page\r\n")
+            self.wait_text(b"PAGE name=")
+            self.wait_text(b"\n")
+            current = bytes(self.output)
+            if b"error_present=1" in current or b"COMMAND FAIL" in current:
+                raise RuntimeError(f"Website load failed: {current.decode(errors='replace')}")
+            if expected in current:
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"timed out waiting for {expected!r}")
+            time.sleep(0.2)
+
     def run(self) -> None:
         try:
             self.wait_text(b"MICROBROWSER_QEMU_READY")
@@ -122,9 +149,11 @@ class QemuProcess:
             self.wait_text((b"SELFTEST PASS", b"SELFTEST FAIL"))
             if b"SELFTEST FAIL" in self.output:
                 raise RuntimeError("firmware reported SELFTEST FAIL")
+            self.open_website()
             self.output.clear()
             self.send("stats\n")
-            self.wait_text(b"MICROBROWSER_STATS")
+            self.wait_text(b"stack_min_free_bytes=")
+            self.wait_text(b"\n")
             self.output.clear()
             self.send(b"\x01c")
             self.wait_text(b"(qemu)")
@@ -148,13 +177,18 @@ def main() -> int:
     repo = Path(__file__).resolve().parents[1]
     parser.add_argument("--screenshot", type=Path, default=repo / "build" / "qemu-dashboard.ppm")
     parser.add_argument("--headless", action="store_true", help="omit QEMU's graphical display window")
+    parser.add_argument("--url", help="open a website through the running Reader gateway")
+    parser.add_argument("--expect-page", help="expected Reader page title when --url is used")
     parser.add_argument("--timeout", type=float, default=90.0)
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if bool(args.url) != bool(args.expect_page):
+        parser.error("--url and --expect-page must be supplied together")
     args.screenshot.parent.mkdir(parents=True, exist_ok=True)
     try:
-        QemuProcess(repo, args.screenshot, not args.headless, args.timeout).run()
+            QemuProcess(repo, args.screenshot, not args.headless, args.timeout,
+                        website=(args.url, args.expect_page) if args.url else None).run()
     except (RuntimeError, subprocess.SubprocessError, OSError) as error:
         print(f"QEMU smoke failed: {error}", file=sys.stderr)
         return 1

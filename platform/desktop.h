@@ -27,6 +27,8 @@ public:
     [[nodiscard]] uint64_t now_ms() const override;
     void start_request(uint32_t id, std::string url) override;
     [[nodiscard]] bool poll_request(HttpResult& result) override;
+    void start_content(uint32_t id, ContentRequest request) override;
+    [[nodiscard]] bool poll_content(HttpResult& result) override;
 
     [[nodiscard]] std::optional<Value> load_value(const std::string& name) const override;
     void save_value(const std::string& name, const Value& value) override;
@@ -35,8 +37,12 @@ public:
 private:
     struct Request {
         uint32_t id = 0;
-        std::string url;
+        ContentRequest request;
+        bool content = false;
     };
+
+    void enqueue_request(Request request);
+    bool poll_completion(HttpResult& result, std::deque<HttpResult>& completions);
 
     void worker_loop();
 
@@ -47,6 +53,7 @@ private:
     std::condition_variable m_request_ready;
     std::deque<Request> m_pending_requests;
     std::deque<HttpResult> m_completed_requests;
+    std::deque<HttpResult> m_completed_content;
     std::size_t m_outstanding_requests = 0;
     bool m_stopping = false;
     std::thread m_worker;

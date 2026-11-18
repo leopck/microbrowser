@@ -8,4 +8,13 @@ config MB_QEMU_ETHERNET
         Initialize the virtual OpenCores Ethernet device provided by Espressif
         QEMU. QEMU does not emulate Wi-Fi; this is a real lwIP Ethernet path.
 
+config MB_GATEWAY_URL
+    string "Website conversion gateway origin"
+    default "http://10.0.2.2:8765" if MB_QEMU_ETHERNET
+    default "http://127.0.0.1:8765"
+    help
+        Trusted HTTP(S) origin for gateway/server.py. In QEMU, 10.0.2.2
+        reaches the development host. Reader is the default website path;
+        interactive Chromium processing requires an explicit user action.
+
 endmenu

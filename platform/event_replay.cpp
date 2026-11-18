@@ -51,8 +51,9 @@ struct Screenshot {
     std::filesystem::path path;
 };
 
+struct OpenUrl { std::string url; bool interactive = false; };
 using ReplayAction = std::variant<Click, PointerDown, PointerMove, PointerUp, Wait,
-                                  KeyPress, TextInput, FunctionCall, Scroll, Screenshot>;
+                                  KeyPress, OpenUrl, TextInput, FunctionCall, Scroll, Screenshot>;
 
 [[noreturn]] void replay_error(const std::filesystem::path& source, std::size_t line,
                                std::string_view message) {
@@ -142,6 +143,13 @@ ReplayAction parse_tokens(std::string_view name, std::istringstream& tokens) {
         if (value.empty()) throw std::invalid_argument("scroll requires a delta");
         require_end(tokens);
         return Scroll{parse_number<int>(value)};
+    }
+    if (name == "url" || name == "interactive") {
+        std::string url;
+        tokens >> url;
+        require_end(tokens);
+        if (url.empty()) throw std::invalid_argument(std::string(name) + " requires an HTTP(S) address");
+        return OpenUrl{std::move(url), name == "interactive"};
     }
     throw std::invalid_argument("unknown command '" + std::string(name) + "'");
 }
@@ -236,6 +244,9 @@ void EventReplay::advance(Browser& browser, ScreenshotWriter write_screenshot) {
                     browser.text_input(action.text);
                 } else if constexpr (std::is_same_v<Action, FunctionCall>) {
                     browser.dispatch(action.name);
+                } else if constexpr (std::is_same_v<Action, OpenUrl>) {
+                    if (action.interactive) browser.open_interactive_url(action.url);
+                    else browser.open_url(action.url);
                 } else if constexpr (std::is_same_v<Action, Scroll>) {
                     browser.scroll(action.delta);
                 } else if constexpr (std::is_same_v<Action, Screenshot>) {

@@ -1,3 +1,4 @@
+#include "url_state.h"
 #include "microbrowser/browser.h"
 #include "layout.h"
 #include "fonts.h"
@@ -80,9 +81,10 @@ std::pair<uint64_t, std::string_view> animation_timing(std::string_view specific
 
 } // namespace
 
-Browser::Browser(Platform& platform, Size size)
+Browser::Browser(Platform& platform, Size size, std::string gateway_url)
     : m_platform(platform), m_size(validated_size(size)),
-      m_pixels(std::size_t(size.width) * std::size_t(size.height), to_rgb565(palette::background)) {
+      m_pixels(std::size_t(size.width) * std::size_t(size.height), to_rgb565(palette::background)),
+      m_url(std::make_unique<UrlState>(validated_gateway_origin(gateway_url))) {
     m_pending_regions.reserve(32);
 }
 
@@ -108,6 +110,14 @@ Node* Browser::find_node(std::string_view id) {
 }
 
 void Browser::load(std::vector<uint8_t> bytes) {
+    clear_url_view(true);
+    m_storage_prefix.clear();
+    apply_package(bytes);
+    m_url->home_package = std::move(bytes);
+    m_url->location = "mb://home";
+}
+
+void Browser::apply_package(const std::vector<uint8_t>& bytes) {
     Package package = parse_package(bytes);
     validate_package(package);
     const uint64_t package_bytes = bytes.size();
@@ -133,7 +143,6 @@ void Browser::load(std::vector<uint8_t> bytes) {
     for (Page& page : m_package.pages) for_each_node(page.root, [&](Node&) { ++m_metrics.node_count; });
     open_page_index(0, false);
 }
-
 void Browser::open_page(std::string_view name, bool remember) {
     const auto found = std::find_if(m_package.pages.begin(), m_package.pages.end(),
         [&](const Page& page) { return page.name == name; });
@@ -164,6 +173,7 @@ void Browser::open_page_index(uint32_t index, bool remember) {
 }
 
 std::string_view Browser::page_name() const {
+    if (m_url->active() && m_url->document) return m_url->document->title;
     return m_page == nullptr ? std::string_view{} : std::string_view(m_page->name);
 }
 
@@ -172,6 +182,10 @@ void Browser::resize(Size size) {
     m_pixels = std::vector<uint16_t>(std::size_t(validated.width) * std::size_t(validated.height), to_rgb565(palette::background));
     m_size = validated;
     invalidate_layout();
+    if (m_url->active() && m_url->document && !m_url->pending_transfer) {
+        const std::string address = m_state.empty() ? m_url->location : m_state[0].string;
+        install_reader_page(*m_url->document, address);
+    }
 }
 
 Value Browser::read_state(uint32_t index) const {
@@ -352,9 +366,8 @@ void Browser::poll_network() {
             handle_error(error.what());
         }
     }
-    const uint32_t active = uint32_t(std::count_if(m_requests.begin(), m_requests.end(),
-        [](const PendingRequest& request) { return request.active; }));
-    m_metrics.active_requests = active;
+    m_metrics.active_requests = uint32_t(std::count_if(m_requests.begin(), m_requests.end(),
+        [](const PendingRequest& request) { return request.active; })) + m_url->active_requests();
 }
 
 void Browser::invalidate(Rect area) {
@@ -433,6 +446,7 @@ bool Browser::tick() {
     const uint64_t now = m_platform.now_ms();
     poll_network();
     advance_timers(now);
+    process_content_requests();
     advance_animations(now);
     if (m_error_until != 0 && m_error_until <= now) {
         m_error_until = 0;

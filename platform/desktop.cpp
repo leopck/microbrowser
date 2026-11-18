@@ -23,7 +23,11 @@ namespace mb {
 namespace {
 
 constexpr std::size_t max_outstanding_requests = 8;
-constexpr std::size_t max_response_bytes = 64 * 1024;
+constexpr std::size_t max_script_response_bytes = 64 * 1024;
+constexpr std::size_t max_content_response_bytes = 2 * 1024 * 1024;
+constexpr std::size_t max_script_url_bytes = 2047;
+constexpr std::size_t max_content_url_bytes = 8192;
+constexpr std::size_t max_content_body_bytes = 4096;
 constexpr long connect_timeout_seconds = 3;
 constexpr long total_timeout_seconds = 10;
 constexpr long maximum_redirects = 5;
@@ -87,12 +91,85 @@ void set_curl_option(CURL* handle, CURLoption option, T value) {
     if (code != CURLE_OK) throw CurlOptionError{code};
 }
 
-struct ResponseBuffer {
-    enum class Failure : uint8_t { none, too_large, allocation };
+bool is_ascii_space(char character) noexcept {
+    return character == ' ' || character == '\t' || character == '\r' ||
+        character == '\n' || character == '\v' || character == '\f';
+}
 
+std::string_view trim_ascii(std::string_view value) noexcept {
+    while (!value.empty() && is_ascii_space(value.front())) value.remove_prefix(1);
+    while (!value.empty() && is_ascii_space(value.back())) value.remove_suffix(1);
+    return value;
+}
+
+char ascii_lower(char character) noexcept {
+    if (character >= 'A' && character <= 'Z') return static_cast<char>(character + ('a' - 'A'));
+    return character;
+}
+
+bool ascii_case_equal(std::string_view left, std::string_view right) noexcept {
+    if (left.size() != right.size()) return false;
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        if (ascii_lower(left[index]) != ascii_lower(right[index])) return false;
+    }
+    return true;
+}
+
+std::string normalized_content_type(std::string_view value) {
+    value = trim_ascii(value.substr(0, value.find(';')));
+    std::string normalized(value);
+    for (char& character : normalized) character = ascii_lower(character);
+    return normalized;
+}
+
+std::string normalized_metadata(std::string_view value) {
+    return std::string(trim_ascii(value));
+}
+
+void validate_content_url(const std::string& url) {
+    if (url.empty() || url.size() > max_content_url_bytes) {
+        throw ScriptError("HTTP content URL must contain 1..8192 bytes");
+    }
+    if (!url.starts_with("http://") && !url.starts_with("https://")) {
+        throw ScriptError("HTTP requests require an HTTP(S) URL");
+    }
+}
+
+void validate_content_request(const ContentRequest& request) {
+    if (request.method == ContentRequestMethod::get) {
+        if (!request.body.empty()) throw ScriptError("HTTP GET content request body must be empty");
+        return;
+    }
+    if (request.method == ContentRequestMethod::post) {
+        if (request.body.size() > max_content_body_bytes) {
+            throw ScriptError("HTTP content request body is limited to 4096 bytes");
+        }
+        return;
+    }
+    throw ScriptError("unsupported HTTP content request method");
+}
+
+struct ResponseBuffer {
+    enum class Failure : uint8_t { none, too_large, allocation, metadata_allocation };
+
+    std::size_t limit = max_script_response_bytes;
     std::string body;
+    std::string content_type;
+    std::string response_url;
+    std::string total_height;
+    std::string image_width;
+    std::string image_height;
+    std::string image_y;
     Failure failure = Failure::none;
 };
+
+void clear_response_metadata(ResponseBuffer& response) noexcept {
+    response.content_type.clear();
+    response.total_height.clear();
+    response.image_width.clear();
+    response.image_height.clear();
+    response.image_y.clear();
+}
 
 size_t response_write_callback(char* data, size_t size, size_t count, void* opaque) noexcept {
     ResponseBuffer& response = *static_cast<ResponseBuffer*>(opaque);
@@ -102,7 +179,7 @@ size_t response_write_callback(char* data, size_t size, size_t count, void* opaq
         return 0;
     }
     const size_t bytes = size * count;
-    if (bytes > max_response_bytes - response.body.size()) {
+    if (bytes > response.limit - response.body.size()) {
         response.failure = ResponseBuffer::Failure::too_large;
         return 0;
     }
@@ -115,10 +192,61 @@ size_t response_write_callback(char* data, size_t size, size_t count, void* opaq
     return bytes;
 }
 
-void configure_request(CURL* handle, const std::string& url, ResponseBuffer& response) {
+size_t response_header_callback(char* data, size_t size, size_t count, void* opaque) noexcept {
+    ResponseBuffer& response = *static_cast<ResponseBuffer*>(opaque);
+    if (count == 0) return 0;
+    if (size != 0 && count > std::numeric_limits<size_t>::max() / size) {
+        response.failure = ResponseBuffer::Failure::metadata_allocation;
+        return 0;
+    }
+    const size_t bytes = size * count;
+    const std::string_view header(data, bytes);
+    if (header.size() >= 5 && ascii_case_equal(header.substr(0, 5), "HTTP/")) {
+        clear_response_metadata(response);
+        return bytes;
+    }
+    const std::size_t colon = header.find(':');
+    if (colon == std::string_view::npos) return bytes;
+    const std::string_view name = header.substr(0, colon);
+    const std::string_view value = header.substr(colon + 1);
+    try {
+        if (ascii_case_equal(name, "Content-Type")) {
+            response.content_type = normalized_content_type(value);
+        } else if (ascii_case_equal(name, "X-Microbrowser-Total-Height")) {
+            response.total_height = normalized_metadata(value);
+        } else if (ascii_case_equal(name, "X-Microbrowser-Width")) {
+            response.image_width = normalized_metadata(value);
+        } else if (ascii_case_equal(name, "X-Microbrowser-Height")) {
+            response.image_height = normalized_metadata(value);
+        } else if (ascii_case_equal(name, "X-Microbrowser-Y")) {
+            response.image_y = normalized_metadata(value);
+        }
+    } catch (...) {
+        response.failure = ResponseBuffer::Failure::metadata_allocation;
+        return 0;
+    }
+    return bytes;
+}
+
+struct CurlHeadersDeleter {
+    void operator()(curl_slist* headers) const noexcept {
+        if (headers != nullptr) curl_slist_free_all(headers);
+    }
+};
+using CurlHeaders = std::unique_ptr<curl_slist, CurlHeadersDeleter>;
+
+void configure_request(CURL* handle, const ContentRequest& request, bool content,
+                       ResponseBuffer& response, const curl_slist* headers) {
     curl_easy_reset(handle);
-    set_curl_option(handle, CURLOPT_URL, url.c_str());
-    set_curl_option(handle, CURLOPT_HTTPGET, 1L);
+    set_curl_option(handle, CURLOPT_URL, request.url.c_str());
+    if (content && request.method == ContentRequestMethod::post) {
+        set_curl_option(handle, CURLOPT_POST, 1L);
+        set_curl_option(handle, CURLOPT_POSTFIELDS, request.body.data());
+        set_curl_option(handle, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(request.body.size()));
+        set_curl_option(handle, CURLOPT_HTTPHEADER, headers);
+    } else {
+        set_curl_option(handle, CURLOPT_HTTPGET, 1L);
+    }
     set_curl_option(handle, CURLOPT_FOLLOWLOCATION, 1L);
     set_curl_option(handle, CURLOPT_MAXREDIRS, maximum_redirects);
     set_curl_option(handle, CURLOPT_TIMEOUT, total_timeout_seconds);
@@ -126,8 +254,7 @@ void configure_request(CURL* handle, const std::string& url, ResponseBuffer& res
     set_curl_option(handle, CURLOPT_NOSIGNAL, 1L);
     set_curl_option(handle, CURLOPT_SSL_VERIFYPEER, 1L);
     set_curl_option(handle, CURLOPT_SSL_VERIFYHOST, 2L);
-    set_curl_option(handle, CURLOPT_MAXFILESIZE_LARGE,
-                    static_cast<curl_off_t>(max_response_bytes));
+    set_curl_option(handle, CURLOPT_MAXFILESIZE_LARGE, static_cast<curl_off_t>(response.limit));
     set_curl_option(handle, CURLOPT_USERAGENT, "microbrowser-desktop/1");
 #if LIBCURL_VERSION_NUM >= 0x075500
     set_curl_option(handle, CURLOPT_PROTOCOLS_STR, "http,https");
@@ -140,9 +267,13 @@ void configure_request(CURL* handle, const std::string& url, ResponseBuffer& res
 #endif
     set_curl_option(handle, CURLOPT_WRITEFUNCTION, response_write_callback);
     set_curl_option(handle, CURLOPT_WRITEDATA, &response);
+    if (content) {
+        set_curl_option(handle, CURLOPT_HEADERFUNCTION, response_header_callback);
+        set_curl_option(handle, CURLOPT_HEADERDATA, &response);
+    }
 }
 
-HttpResult perform_request(CURL* handle, uint32_t id, const std::string& url) {
+HttpResult perform_request(CURL* handle, uint32_t id, const ContentRequest& request, bool content) {
     HttpResult result;
     result.id = id;
     if (handle == nullptr) {
@@ -151,9 +282,19 @@ HttpResult perform_request(CURL* handle, uint32_t id, const std::string& url) {
     }
 
     ResponseBuffer response;
+    response.limit = content ? max_content_response_bytes : max_script_response_bytes;
+    CurlHeaders request_headers;
     CURLcode code = CURLE_OK;
     try {
-        configure_request(handle, url, response);
+        if (content && request.method == ContentRequestMethod::post) {
+            curl_slist* headers = curl_slist_append(nullptr, "Content-Type: application/json");
+            if (headers == nullptr) {
+                result.error = "HTTP setup error: could not allocate request headers";
+                return result;
+            }
+            request_headers.reset(headers);
+        }
+        configure_request(handle, request, content, response, request_headers.get());
         code = curl_easy_perform(handle);
     } catch (const CurlOptionError& error) {
         result.error = std::string("HTTP setup error: ") + curl_easy_strerror(error.code);
@@ -170,10 +311,35 @@ HttpResult perform_request(CURL* handle, uint32_t id, const std::string& url) {
             : std::string("HTTP response error: ") + curl_easy_strerror(status_code);
     }
 
-    if (response.failure == ResponseBuffer::Failure::too_large) {
-        result.error = "HTTP response error: body exceeds the 65536-byte limit";
+    if (content) {
+        char* effective_url = nullptr;
+        const CURLcode url_code = curl_easy_getinfo(handle, CURLINFO_EFFECTIVE_URL, &effective_url);
+        try {
+            if (url_code == CURLE_OK && effective_url != nullptr) {
+                response.response_url = effective_url;
+            } else {
+                result.error = url_code == CURLE_OK
+                    ? "HTTP response error: effective URL is unavailable"
+                    : std::string("HTTP response error: ") + curl_easy_strerror(url_code);
+            }
+        } catch (...) {
+            response.failure = ResponseBuffer::Failure::metadata_allocation;
+        }
+        result.content_type = std::move(response.content_type);
+        result.response_url = std::move(response.response_url);
+        result.total_height = std::move(response.total_height);
+        result.image_width = std::move(response.image_width);
+        result.image_height = std::move(response.image_height);
+        result.image_y = std::move(response.image_y);
+    }
+
+    if (response.failure == ResponseBuffer::Failure::too_large || code == CURLE_FILESIZE_EXCEEDED) {
+        result.error = content ? "HTTP response exceeds the 2097152-byte limit"
+                               : "HTTP response error: body exceeds the 65536-byte limit";
     } else if (response.failure == ResponseBuffer::Failure::allocation) {
         result.error = "HTTP response error: could not allocate the bounded body buffer";
+    } else if (response.failure == ResponseBuffer::Failure::metadata_allocation) {
+        result.error = "HTTP response error: could not allocate response metadata";
     } else if (code != CURLE_OK) {
         result.error = std::string("HTTP transport error: ") + curl_easy_strerror(code);
     }
@@ -392,23 +558,44 @@ uint64_t DesktopPlatform::now_ms() const {
 }
 
 void DesktopPlatform::start_request(uint32_t id, std::string url) {
+    if (url.empty() || url.size() > max_script_url_bytes) {
+        throw ScriptError("HTTP URL must contain 1..2047 bytes");
+    }
+    enqueue_request(Request{id, ContentRequest{std::move(url), ContentRequestMethod::get, std::string{}}, false});
+}
+
+void DesktopPlatform::start_content(uint32_t id, ContentRequest request) {
+    validate_content_url(request.url);
+    validate_content_request(request);
+    enqueue_request(Request{id, std::move(request), true});
+}
+
+void DesktopPlatform::enqueue_request(Request request) {
     {
         std::lock_guard lock(m_request_mutex);
         if (m_stopping) throw ScriptError("cannot queue HTTP work while the platform is stopping");
         if (m_outstanding_requests >= max_outstanding_requests) {
             throw ScriptError("HTTP request queue is full (8 outstanding requests)");
         }
-        m_pending_requests.push_back(Request{id, std::move(url)});
+        m_pending_requests.push_back(std::move(request));
         ++m_outstanding_requests;
     }
     m_request_ready.notify_one();
 }
 
 bool DesktopPlatform::poll_request(HttpResult& result) {
+    return poll_completion(result, m_completed_requests);
+}
+
+bool DesktopPlatform::poll_content(HttpResult& result) {
+    return poll_completion(result, m_completed_content);
+}
+
+bool DesktopPlatform::poll_completion(HttpResult& result, std::deque<HttpResult>& completions) {
     std::lock_guard lock(m_request_mutex);
-    if (m_completed_requests.empty()) return false;
-    result = std::move(m_completed_requests.front());
-    m_completed_requests.pop_front();
+    if (completions.empty()) return false;
+    result = std::move(completions.front());
+    completions.pop_front();
     --m_outstanding_requests;
     return true;
 }
@@ -425,7 +612,7 @@ void DesktopPlatform::worker_loop() {
             m_pending_requests.pop_front();
         }
 
-        HttpResult result = perform_request(handle.get(), request.id, request.url);
+        HttpResult result = perform_request(handle.get(), request.id, request.request, request.content);
         if (!result.error.empty()) {
             log("HTTP request " + std::to_string(request.id) + " failed: " + result.error);
         } else if (result.status != 0 && !result.succeeded()) {
@@ -436,7 +623,8 @@ void DesktopPlatform::worker_loop() {
         {
             std::lock_guard lock(m_request_mutex);
             if (m_stopping) break;
-            m_completed_requests.push_back(std::move(result));
+            std::deque<HttpResult>& completions = request.content ? m_completed_content : m_completed_requests;
+            completions.push_back(std::move(result));
         }
     }
 }
