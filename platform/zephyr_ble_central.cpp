@@ -479,13 +479,15 @@ public:
     NativeCallbackGuard& operator=(const NativeCallbackGuard&) = delete;
 
 private:
-    k_spinlock_key key;
+    k_spinlock_key_t key;
 };
 
 void connection_connected(bt_conn* conn, std::uint8_t error) noexcept;
 void connection_disconnected(bt_conn* conn, std::uint8_t reason) noexcept;
+#if defined(CONFIG_BT_SMP) || defined(CONFIG_BT_CLASSIC)
 void connection_security_changed(bt_conn* conn, bt_security_t level,
                                   enum bt_security_err error) noexcept;
+#endif
 
 [[nodiscard]] IoStatus register_native_state(BleNativeState* state) noexcept;
 void unregister_native_state(BleNativeState* state) noexcept;
@@ -533,8 +535,10 @@ struct BleNativeState {
     static void on_scan_timeout(k_work* work) noexcept;
     void handle_connected(bt_conn* conn, std::uint8_t error) noexcept;
     void handle_disconnected(bt_conn* conn, std::uint8_t reason) noexcept;
+#if defined(CONFIG_BT_SMP) || defined(CONFIG_BT_CLASSIC)
     void handle_security_changed(bt_conn* conn, bt_security_t level,
                                  enum bt_security_err error) noexcept;
+#endif
     static uint8_t on_attribute_read(bt_conn* conn, std::uint8_t error,
                                      bt_gatt_read_params* parameters,
                                      const void* data, std::uint16_t length) noexcept;
@@ -808,11 +812,13 @@ void connection_disconnected(bt_conn* conn, std::uint8_t reason) noexcept {
     for_each_native_state([&](BleNativeState& state) { state.handle_disconnected(conn, reason); });
 }
 
+#if defined(CONFIG_BT_SMP) || defined(CONFIG_BT_CLASSIC)
 void connection_security_changed(bt_conn* conn, bt_security_t level,
                                  enum bt_security_err error) noexcept {
     for_each_native_state(
         [&](BleNativeState& state) { state.handle_security_changed(conn, level, error); });
 }
+#endif
 
 void BleNativeState::handle_connected(bt_conn* conn, std::uint8_t error) noexcept {
     bool accepted = false;
@@ -974,6 +980,7 @@ void BleNativeState::handle_disconnected(bt_conn* conn, std::uint8_t reason) noe
     wake();
 }
 
+#if defined(CONFIG_BT_SMP) || defined(CONFIG_BT_CLASSIC)
 void BleNativeState::handle_security_changed(bt_conn* conn, bt_security_t level,
                                              enum bt_security_err /*error*/) noexcept {
     bool changed = false;
@@ -992,6 +999,7 @@ void BleNativeState::handle_security_changed(bt_conn* conn, bt_security_t level,
     }
     if (changed) publish_connection(true);
 }
+#endif
 
 void BleNativeState::clear_attribute_cache() noexcept {
     connection.service_count = 0;
@@ -1280,7 +1288,7 @@ bool BleNativeState::continue_current_operation() noexcept {
     case NativePhase::unsubscribe_wait:
     case NativePhase::disconnect_wait: return false;
     case NativePhase::close_wait: return continue_close(operation);
-    case NativePhase::close_start: continue_close(operation); return true;
+    case NativePhase::close_start: return continue_close(operation);
     case NativePhase::characteristics_start: start_characteristic_discovery(operation); return true;
     case NativePhase::attributes_finish: finish_attributes(operation); return true;
     case NativePhase::action_start: start_action(operation); return true;
@@ -1302,6 +1310,9 @@ bool BleNativeState::continue_current_operation() noexcept {
         finish(operation, operation.terminal_status);
         return true;
     }
+    default:
+        finish(operation, IoStatus::unsupported);
+        return true;
 }
 
 void BleNativeState::cancel_current_native_procedure(NativeOperation& operation) noexcept {
