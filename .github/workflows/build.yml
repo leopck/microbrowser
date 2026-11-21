@@ -202,11 +202,13 @@ jobs:
 
       - name: Check out the pinned NCS sources
         run: |
+          # West passes --manifest-rev to git clone --branch, not a SHA-aware
+          # checkout command. Select the immutable release after initialization.
           # NCS v3.4.2
           west init \
             --manifest-url https://github.com/nrfconnect/sdk-nrf \
-            --manifest-rev f0b8ad4c737745efc407b294d99fbc2279ea09a1 \
             "${NCS_ROOT}"
+          git -C "${NCS_ROOT}/nrf" checkout --detach f0b8ad4c737745efc407b294d99fbc2279ea09a1
           cd "${NCS_ROOT}"
           west -vv update
           python3 -m pip install \
