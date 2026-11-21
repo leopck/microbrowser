@@ -68,7 +68,7 @@ if [[ "${package}" != /* ]]; then
 fi
 
 default_package="${repo_dir}/build/dashboard.mbp"
-if [[ "${package}" == "${default_package}" ]]; then
+if (( ! package_explicit )) && [[ "${package}" == "${default_package}" ]]; then
     python3 "${repo_dir}/tools/mbc" build \
         "${repo_dir}/examples/dashboard.mb" -o "${default_package}"
 fi

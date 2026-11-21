@@ -84,6 +84,7 @@ check-state: build/native_persistence_tests
 	./build/native_persistence_tests
 
 test: all dashboard build/ui_test.mbp build/counter.mbp build/runtime_tests build/device_builtins_tests build/peripheral_tests check-gpio check-conformance check-state
+	./build/runtime_tests build/dashboard.mbp build/ui_test.mbp
 	./build/device_builtins_tests
 	./build/peripheral_tests
 	$(PYTHON) -m unittest discover -s tests -p 'test_*.py'

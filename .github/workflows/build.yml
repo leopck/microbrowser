@@ -45,6 +45,7 @@ jobs:
 
       - name: Compile application packages
         run: |
+          mkdir -p build
           python3 tools/mbc build examples/dashboard.mb --output build/dashboard.mbp
           python3 tools/mbc build examples/counter.mb --output build/counter.mbp
           python3 tools/mbc build examples/gpio_conformance.mb --output build/gpio_conformance.mbp
@@ -89,7 +90,7 @@ jobs:
         run: |
           make .tools/gateway-venv/.installed
           .tools/gateway-venv/bin/python -m playwright install --with-deps chromium
-          make -j2 web-test
+          make -j2 PYTHON=.tools/gateway-venv/bin/python web-test
 
       - name: Publish desktop application and replay captures
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
