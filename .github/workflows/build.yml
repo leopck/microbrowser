@@ -53,7 +53,7 @@ jobs:
           python3 tools/mbc build tests/ui_test.mb --output build/ui_test.mbp
 
       - name: Publish application packages
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: application-packages
           retention-days: 7
@@ -70,7 +70,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Download shared application packages
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: application-packages
           path: build
@@ -84,6 +84,7 @@ jobs:
             libcurl4-openssl-dev
 
       - name: Build desktop application and run host and gateway tests
+        id: host_tests
         env:
           SDL_VIDEODRIVER: dummy
           SDL_RENDER_DRIVER: software
@@ -92,8 +93,31 @@ jobs:
           .tools/gateway-venv/bin/python -m playwright install --with-deps chromium
           make -j2 PYTHON=.tools/gateway-venv/bin/python web-test
 
+      - name: Record font-source differences
+        id: font_source_differences
+        if: steps.host_tests.outcome == 'failure'
+        run: |
+          .tools/gateway-venv/bin/python tools/build_fonts.py --output build/font_data.cpp
+          diff_status=0
+          diff -u core/font_data.cpp build/font_data.cpp > build/font-data.patch || diff_status=$?
+          if (( diff_status > 1 )); then
+            exit "${diff_status}"
+          fi
+          wc -lc build/font-data.patch
+
+      - name: Publish font-source diagnostic
+        if: steps.font_source_differences.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: font-source-diagnostic
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            build/font-data.patch
+            build/font_data.cpp
+
       - name: Publish desktop application and replay captures
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: microbrowser-desktop
           retention-days: 7
@@ -114,7 +138,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Download shared application packages
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: application-packages
           path: build
@@ -133,7 +157,7 @@ jobs:
         run: firmware/run.sh --smoke --package build/dashboard.mbp
 
       - name: Publish ESP32-S3 firmware and QEMU capture
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: microbrowser-esp32s3
           retention-days: 7
@@ -171,7 +195,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Download shared application packages
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: application-packages
           path: build
@@ -180,10 +204,11 @@ jobs:
         run: |
           west init \
             --manifest-url https://github.com/nrfconnect/sdk-nrf \
-            --manifest-rev v3.4.2 \
+            # NCS v3.4.2
+            --manifest-rev f0b8ad4c737745efc407b294d99fbc2279ea09a1 \
             "${NCS_ROOT}"
           cd "${NCS_ROOT}"
-          west update --fetch-opt=--depth=1
+          west -vv update
           python3 -m pip install \
             --requirement zephyr/scripts/requirements.txt \
             --requirement nrf/scripts/requirements-fixed.txt
@@ -204,10 +229,11 @@ jobs:
           firmware/nrf5340_app/build.sh --gatt nrf7002dk/nrf5340/cpuapp
 
       - name: Publish nRF5340 application and controller images
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: microbrowser-nrf5340
           retention-days: 7
+          include-hidden-files: true
           path: |
             build/gatt_conformance.mbp
             build/nrf5340-app-gatt/nrf5340_app/zephyr/zephyr.elf
