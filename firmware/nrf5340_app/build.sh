@@ -35,10 +35,12 @@ else
     fi
     build_dir=${NCS_BUILD_DIR:-"${repo_dir}/.tools/nrfconnect/build/nrf5340-app-${board//\//-}${build_suffix}"}
 fi
+cmake_executable=${NCS_CMAKE:-"${toolchain_root}/bin/cmake"}
 git_executable=${GIT_EXECUTABLE:-/usr/bin/git}
 
-if [[ ! -x "${toolchain_root}/bin/cmake" || ! -x "${python_path}" ]]; then
-    printf 'Set NCS_TOOLCHAIN and NCS_PYTHON to the NCS 3.4.2 toolchain and Python.\n' >&2
+if [[ ! -x "${cmake_executable}" || ! -x "${python_path}" ]]; then
+    printf 'Missing executable(s). Set NCS_TOOLCHAIN, NCS_CMAKE and NCS_PYTHON for NCS 3.4.2.\n' >&2
+    printf 'CMake: %s\nPython: %s\n' "${cmake_executable}" "${python_path}" >&2
     exit 2
 fi
 if ! "${python_path}" -c 'import jsonschema, yaml, elftools'; then
@@ -80,9 +82,9 @@ if [[ "${gatt_mode}" == 1 ]]; then
     )
 fi
 
-"${toolchain_root}/bin/cmake" -S "${source_dir}" -B "${build_dir}" -G Ninja \
+"${cmake_executable}" -S "${source_dir}" -B "${build_dir}" -G Ninja \
     "${configure_args[@]}" "$@"
-"${toolchain_root}/bin/cmake" --build "${build_dir}" -j 4
+"${cmake_executable}" --build "${build_dir}" -j 4
 
 if [[ "${gatt_mode}" == 1 ]]; then
     printf 'Application images: %s/nrf5340_app/zephyr/zephyr.{elf,hex}\n' "${build_dir}"

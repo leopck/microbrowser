@@ -225,6 +225,7 @@ jobs:
             exit 1
           fi
           export NCS_TOOLCHAIN="${toolchain_dir}"
+          export NCS_CMAKE="$(command -v cmake)"
           export NCS_PYTHON="$(command -v python3)"
           export GIT_EXECUTABLE="$(command -v git)"
           python3 -c 'import jsonschema, yaml, elftools'

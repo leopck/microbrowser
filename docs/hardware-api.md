@@ -342,6 +342,8 @@ firmware/run.sh --owner-profile firmware/sdkconfig.gatt_central \
 firmware/nrf5340_app/build.sh --gatt nrf7002dk/nrf5340/cpuapp
 ```
 
+For manual Nordic tool installations, `NCS_CMAKE` overrides the CMake executable used by `build.sh`. Derive it from the selected toolchain environment (for example, `command -v cmake`) when that package does not place CMake in `${NCS_TOOLCHAIN}/bin`. The GitHub workflow supplies this setting from the official Nordic image together with `NCS_TOOLCHAIN`, `NCS_PYTHON` and the release source root shown in `firmware/nrf5340_app/build.sh`.
+
 The ESP fragment selects actual NimBLE/controller support and limits this
 profile's scan window to 5 seconds. The Nordic `build.sh --gatt` path keeps the
 nRF7002 Wi-Fi transport, merges `gatt.conf`, and builds the generic Zephyr
