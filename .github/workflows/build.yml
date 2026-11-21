@@ -95,7 +95,7 @@ jobs:
 
       - name: Record font-source differences
         id: font_source_differences
-        if: steps.host_tests.outcome == 'failure'
+        if: ${{ always() && steps.host_tests.outcome == 'failure' }}
         run: |
           .tools/gateway-venv/bin/python tools/build_fonts.py --output build/font_data.cpp
           diff_status=0
@@ -106,7 +106,7 @@ jobs:
           wc -lc build/font-data.patch
 
       - name: Publish font-source diagnostic
-        if: steps.font_source_differences.outcome == 'success'
+        if: ${{ always() && steps.font_source_differences.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: font-source-diagnostic
@@ -202,9 +202,9 @@ jobs:
 
       - name: Check out the pinned NCS sources
         run: |
+          # NCS v3.4.2
           west init \
             --manifest-url https://github.com/nrfconnect/sdk-nrf \
-            # NCS v3.4.2
             --manifest-rev f0b8ad4c737745efc407b294d99fbc2279ea09a1 \
             "${NCS_ROOT}"
           cd "${NCS_ROOT}"
