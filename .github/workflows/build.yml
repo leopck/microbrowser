@@ -216,6 +216,7 @@ jobs:
             --requirement nrf/scripts/requirements-fixed.txt
 
       - name: Build the nRF5340 GATT profile
+        id: nrf_build
         run: |
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           toolchain_dir="${ZEPHYR_SDK_INSTALL_DIR%/opt/zephyr-sdk}"
@@ -230,6 +231,17 @@ jobs:
           export GIT_EXECUTABLE="$(command -v git)"
           python3 -c 'import jsonschema, yaml, elftools'
           firmware/nrf5340_app/build.sh --gatt nrf7002dk/nrf5340/cpuapp
+
+      - name: Publish nRF linker diagnostics after a failed link
+        if: ${{ always() && steps.nrf_build.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: microbrowser-nrf5340-linker-diagnostics
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            build/nrf5340-app-gatt/nrf5340_app/zephyr/zephyr_pre0.map
+            build/nrf5340-app-gatt/hci_ipc/zephyr/zephyr.map
 
       - name: Publish nRF5340 application and controller images
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
