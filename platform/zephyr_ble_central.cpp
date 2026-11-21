@@ -1089,6 +1089,7 @@ void BleNativeState::request_disconnect(bool cleanup) noexcept {
     }
     const int error = bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
     if (error == 0) return;
+    const auto key = k_spin_lock(&lock);
 
     connection.disconnect_started = false;
     connection.disconnect_failed = true;
@@ -1309,10 +1310,10 @@ bool BleNativeState::continue_current_operation() noexcept {
     case NativePhase::none:
         finish(operation, operation.terminal_status);
         return true;
-    }
     default:
         finish(operation, IoStatus::unsupported);
         return true;
+    }
 }
 
 void BleNativeState::cancel_current_native_procedure(NativeOperation& operation) noexcept {
