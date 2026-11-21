@@ -474,6 +474,15 @@ WebBluetooth, WebAudio, WebUSB, a W3C DOM, or JavaScript running on the MCU.
 | Host + VM | Shared core types; test-only modeled peripherals; host HTTP fixture for native package confirmation | `make check-gpio`: same embedded and confirmed-download artifact finishes GPIO lifecycle twice | OS GPIO, radio, physical timing, signed publisher identity |
 | ESP32-S3 | ESP-IDF platform with NVS/asynchronous HTTP; owner-bound GPIO and SPI/I²C/I²S/DMA-safe backend files; `esp_idf_ble_central.*` with the owner-selected NimBLE controller; optional package embedding/download | `make qemu`: dashboard self-test, exact i64/binary NVS reconstruction, actual virtual LCD, emulated Ethernet. `make qemu-gpio`: GPIO subscription and close callbacks, without edge/IRQ claims. The owner and GATT profiles compile native drivers; the GATT artifact has an exact embedded hash | Physical peripheral transactions/IRQs, real panel/touch pins, Wi-Fi, NimBLE controller operation and attached-bus bench checks |
 | nRF5340 application core | `platform/zephyr_peripherals.*` GPIO; owner-selected `zephyr_ble_central.*`; full Browser target under `firmware/nrf5340_app`, with Zephyr NVS and asynchronous HTTP package code | `firmware/nrf5340_gpio/bsim.sh`: alternating GPIO edges, rejected input writes, no events after unsubscribe, normal shutdown; GPIO1.9 event-link COUNT/CC0, TIMER1 rejection, stop/restart count preservation and close | Physical board, Wi-Fi/HTTPS, native GATT/radio execution, audio/USB and physical event-link behavior. Building GATT profiles or their controller image alone does not establish these |
+
+The physical `build.sh --gatt` profile expects a raw application image starting
+at flash address zero. It reserves 960 KiB for application code and data while
+preserving 32 KiB at address 0xf8000 for Wi-Fi settings. The application-core
+linker retains 448 KiB of RAM; its remaining 64 KiB is shared with Bluetooth IPC.
+This is an explicit non-MCUboot deployment: flashing it replaces the previous
+bootloader layout and does not provide MCUboot update slots. A signed FOTA
+deployment needs its own measured and tested layout; this profile does not claim it.
+
 Bsim is an x86 Zephyr execution using the Nordic hardware models, not an ARM
 firmware run. Its input schedule is `firmware/nrf5340_gpio/bsim_input.csv`.
 The successful sequence reaches `GPIO Bsim alternating-edge notifications

@@ -1,0 +1,28 @@
+/*
+ * Application-only layout for build.sh --gatt. The network-core hci_ipc
+ * image does not receive this overlay.
+ *
+ * This raw image boots directly at address zero and has no MCUboot update
+ * slots or signing/update contract. Preserve the 32 KiB settings partition
+ * for owner-provisioned Wi-Fi credentials; do not claim it for application code.
+ */
+
+/ {
+	chosen {
+		zephyr,code-partition = &direct_boot_partition;
+	};
+};
+
+&flash0 {
+	partitions {
+		/delete-node/ boot_partition;
+		/delete-node/ slot0_partition;
+		/delete-node/ slot1_partition;
+
+		direct_boot_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
+			label = "application";
+			reg = <0x00000000 0x000f0000>;
+		};
+	};
+};

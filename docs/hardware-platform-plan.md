@@ -229,9 +229,10 @@ port boundaries.
   full resource release still occurs on close.
 - GPIO1.9 event-link COUNT/CC0 capture, TIMER1 rejection, stop/restart count
   preservation, and close are verified by the same Bsim script.
-- The current nRF7002DK ARM link uses 1,032,684 bytes of 1 MiB flash (98.48%)
-  and 449,588 bytes of 448 KiB RAM (98.00%). This is a board-resource constraint
-  to recheck during bring-up, not proof of headroom for every runtime workload.
+- The nRF7002 GATT profile uses a raw direct-boot layout, not an MCUboot/FOTA
+  layout. Flash, settings and application-RAM boundaries are specified in
+  [hardware-api.md](hardware-api.md#current-port-boundaries). Image headroom
+  still requires bring-up measurements; compilation is not a runtime budget proof.
 - Nordic C++ confinement remains explicit: worker/ISR paths exchange bounded POD
   records; requests, variants, C++ completion pointers and application callbacks
   are handled on the constructing application/UI thread.

@@ -242,6 +242,8 @@ jobs:
           path: |
             build/nrf5340-app-gatt/nrf5340_app/zephyr/zephyr_pre0.map
             build/nrf5340-app-gatt/hci_ipc/zephyr/zephyr.map
+            build/nrf5340-app-gatt/nrf5340_app/zephyr/zephyr.dts
+            build/nrf5340-app-gatt/hci_ipc/zephyr/zephyr.dts
 
       - name: Publish nRF5340 application and controller images
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -259,3 +261,5 @@ jobs:
             build/nrf5340-app-gatt/hci_ipc/zephyr/zephyr.map
             build/nrf5340-app-gatt/nrf5340_app/include/generated/package_identity.h
             build/nrf5340-app-gatt/nrf5340_app/zephyr/.config
+            build/nrf5340-app-gatt/nrf5340_app/zephyr/zephyr.dts
+            build/nrf5340-app-gatt/hci_ipc/zephyr/zephyr.dts

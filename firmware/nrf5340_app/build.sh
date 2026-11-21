@@ -78,6 +78,8 @@ if [[ "${gatt_mode}" == 1 ]]; then
     configure_args+=(
         -DAPP_DIR="${project_dir}"
         -DEXTRA_CONF_FILE="${project_dir}/gatt.conf"
+        # This overlay belongs only to the application image, not hci_ipc.
+        -Dnrf5340_app_EXTRA_DTC_OVERLAY_FILE="${project_dir}/gatt.overlay"
         -DCMAKE_PROGRAM_PATH=/usr/bin
     )
 fi
