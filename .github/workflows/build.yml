@@ -1,0 +1,219 @@
+name: Build
+
+on:
+  push:
+    paths:
+      - .github/workflows/build.yml
+      - Makefile
+      - core/**
+      - examples/**
+      - firmware/**
+      - gateway/**
+      - include/**
+      - platform/**
+      - tests/**
+      - tools/**
+  pull_request:
+    paths:
+      - .github/workflows/build.yml
+      - Makefile
+      - core/**
+      - examples/**
+      - firmware/**
+      - gateway/**
+      - include/**
+      - platform/**
+      - tests/**
+      - tools/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packages:
+    name: Shared application packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Compile application packages
+        run: |
+          python3 tools/mbc build examples/dashboard.mb --output build/dashboard.mbp
+          python3 tools/mbc build examples/counter.mb --output build/counter.mbp
+          python3 tools/mbc build examples/gpio_conformance.mb --output build/gpio_conformance.mbp
+          python3 tools/mbc build examples/gatt_conformance.mb --output build/gatt_conformance.mbp
+          python3 tools/mbc build tests/ui_test.mb --output build/ui_test.mbp
+
+      - name: Publish application packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: application-packages
+          retention-days: 7
+          if-no-files-found: error
+          path: build/*.mbp
+
+  desktop:
+    name: Desktop application, host and gateway tests
+    needs: packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Download shared application packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: application-packages
+          path: build
+
+      - name: Install desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential \
+            libsdl2-dev \
+            libcurl4-openssl-dev
+
+      - name: Build desktop application and run host and gateway tests
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_RENDER_DRIVER: software
+        run: |
+          make .tools/gateway-venv/.installed
+          .tools/gateway-venv/bin/python -m playwright install --with-deps chromium
+          make -j2 web-test
+
+      - name: Publish desktop application and replay captures
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: microbrowser-desktop
+          retention-days: 7
+          path: |
+            build/microbrowser
+            build/dashboard.ppm
+            build/counter.ppm
+
+  esp32s3:
+    name: ESP32-S3 firmware and QEMU dashboard
+    needs: packages
+    runs-on: ubuntu-24.04
+    container:
+      image: espressif/idf@sha256:4d57a2457abd207dfe10f98bf092f21634d3e87d9395d3209e3696a188590892 # release-v6.1, 2026-11-21
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Download shared application packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: application-packages
+          path: build
+
+      - name: Build the ESP32-S3 GATT profile
+        run: |
+          firmware/run.sh \
+            --owner-profile firmware/sdkconfig.gatt_central \
+            --build-only \
+            --package build/gatt_conformance.mbp
+
+      - name: Install the ESP32 QEMU package
+        run: python "${IDF_PATH}/tools/idf_tools.py" install qemu-xtensa
+
+      - name: Build and execute the dashboard under ESP32-S3 QEMU
+        run: firmware/run.sh --smoke --package build/dashboard.mbp
+
+      - name: Publish ESP32-S3 firmware and QEMU capture
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: microbrowser-esp32s3
+          retention-days: 7
+          path: |
+            build/gatt_conformance.mbp
+            build/dashboard.mbp
+            build/qemu-dashboard.ppm
+            build/firmware-owner-profile/*.bin
+            build/firmware-owner-profile/*.elf
+            build/firmware-owner-profile/*.map
+            build/firmware-owner-profile/application.mbp
+            build/firmware-owner-profile/bootloader/*.bin
+            build/firmware-owner-profile/partition_table/*.bin
+            build/firmware-owner-profile/config/sdkconfig.h
+            build/firmware-owner-profile/flasher_args.json
+            build/firmware-owner-profile/flash_args
+
+  nrf5340:
+    name: nRF5340 application and network-core firmware
+    needs: packages
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/nrfconnect/sdk-nrf-toolchain@sha256:54d1b800cc92602b5206b21a447696982177ac89cdef8c8ca8ef5cab419e0046 # v3.4.2
+    timeout-minutes: 40
+    defaults:
+      run:
+        # Nordic's image supplies its toolchain environment through Bash.
+        shell: bash
+    env:
+      NCS_ROOT: ${{ github.workspace }}/.tools/nrfconnect/ncs
+      NCS_BUILD_DIR: ${{ github.workspace }}/build/nrf5340-app-gatt
+      MICROBROWSER_PACKAGE: ${{ github.workspace }}/build/gatt_conformance.mbp
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Download shared application packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: application-packages
+          path: build
+
+      - name: Check out the pinned NCS sources
+        run: |
+          west init \
+            --manifest-url https://github.com/nrfconnect/sdk-nrf \
+            --manifest-rev v3.4.2 \
+            "${NCS_ROOT}"
+          cd "${NCS_ROOT}"
+          west update --fetch-opt=--depth=1
+          python3 -m pip install \
+            --requirement zephyr/scripts/requirements.txt \
+            --requirement nrf/scripts/requirements-fixed.txt
+
+      - name: Build the nRF5340 GATT profile
+        run: |
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          toolchain_dir="${ZEPHYR_SDK_INSTALL_DIR%/opt/zephyr-sdk}"
+          if [[ "${toolchain_dir}" == "${ZEPHYR_SDK_INSTALL_DIR}" ]]; then
+            printf 'Unexpected Nordic SDK directory: %s\n' \
+              "${ZEPHYR_SDK_INSTALL_DIR}" >&2
+            exit 1
+          fi
+          export NCS_TOOLCHAIN="${toolchain_dir}"
+          export NCS_PYTHON="$(command -v python3)"
+          export GIT_EXECUTABLE="$(command -v git)"
+          python3 -c 'import jsonschema, yaml, elftools'
+          firmware/nrf5340_app/build.sh --gatt nrf7002dk/nrf5340/cpuapp
+
+      - name: Publish nRF5340 application and controller images
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: microbrowser-nrf5340
+          retention-days: 7
+          path: |
+            build/gatt_conformance.mbp
+            build/nrf5340-app-gatt/nrf5340_app/zephyr/zephyr.elf
+            build/nrf5340-app-gatt/nrf5340_app/zephyr/zephyr.hex
+            build/nrf5340-app-gatt/nrf5340_app/zephyr/zephyr.map
+            build/nrf5340-app-gatt/hci_ipc/zephyr/zephyr.elf
+            build/nrf5340-app-gatt/hci_ipc/zephyr/zephyr.hex
+            build/nrf5340-app-gatt/hci_ipc/zephyr/zephyr.map
+            build/nrf5340-app-gatt/nrf5340_app/include/generated/package_identity.h
+            build/nrf5340-app-gatt/nrf5340_app/zephyr/.config

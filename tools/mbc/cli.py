@@ -13,7 +13,7 @@ from .package import decode_package, inspect_summary, read_package
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="mbc", description="Compile and inspect Microbrowser version-2 packages"
+        prog="mbc", description="Compile and inspect Microbrowser versions 2 and 3 packages"
     )
     commands = parser.add_subparsers(dest="command", required=True)
     build = commands.add_parser("build", help="compile an .mb source file")

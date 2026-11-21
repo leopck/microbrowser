@@ -1,0 +1,31 @@
+# ESP32-S3 owner example. Every peripheral remains disabled unless this
+# fragment is explicitly selected with run.sh --owner-profile. Verify these
+# static assignments against the attached schematic before using hardware.
+CONFIG_MB_GPIO=y
+CONFIG_MB_GPIO_STATUS_LED=y
+CONFIG_MB_GPIO_STATUS_LED_PIN=2
+CONFIG_MB_GPIO_USER_BUTTON=y
+CONFIG_MB_GPIO_USER_BUTTON_PIN=4
+
+# SPI2_HOST, mode 0, one lane, <=1 MHz, automatic DMA, 1000 ms timeout.
+CONFIG_MB_SPI=y
+CONFIG_MB_SPI_SENSOR=y
+CONFIG_MB_SPI_SENSOR_CS_PIN=10
+CONFIG_MB_SPI_SENSOR_MOSI_PIN=11
+CONFIG_MB_SPI_SENSOR_CLOCK_PIN=12
+CONFIG_MB_SPI_SENSOR_MISO_PIN=13
+
+# I2C_NUM_0, 100 kHz, external pull-ups, only 7-bit address 0x48 allowed.
+CONFIG_MB_I2C=y
+CONFIG_MB_I2C_SENSOR_BUS=y
+CONFIG_MB_I2C_SENSOR_SDA_PIN=8
+CONFIG_MB_I2C_SENSOR_SCL_PIN=9
+CONFIG_MB_I2C_SENSOR_FIRST_ADDRESS=0x48
+CONFIG_MB_I2C_SENSOR_LAST_ADDRESS=0x48
+
+# I2S_NUM_0 master standard TX, signed 16/24/32-bit PCM, no external MCLK.
+CONFIG_MB_I2S=y
+CONFIG_MB_I2S_AUDIO_OUTPUT=y
+CONFIG_MB_I2S_AUDIO_BCLK_PIN=5
+CONFIG_MB_I2S_AUDIO_WS_PIN=6
+CONFIG_MB_I2S_AUDIO_DOUT_PIN=7

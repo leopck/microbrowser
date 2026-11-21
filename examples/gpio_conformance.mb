@@ -1,0 +1,92 @@
+<microbrowser name="GPIO conformance">
+  <state>
+    <field name="device" type="handle" value=""/>
+    <field name="subscription" type="handle" value=""/>
+    <field name="completions" type="i64" value="0"/>
+    <field name="edges" type="i64" value="0"/>
+    <field name="level" type="bool" value="false"/>
+    <field name="last_status" type="i64" value="0"/>
+    <field name="timestamp_ns" type="i64" value="0"/>
+  </state>
+
+  <hardware>
+    <require capability="gpio_input" version="1.0"/>
+    <permission endpoint="user_button"/>
+  </hardware>
+
+  <page name="conformance">
+    <column padding="12" gap="8" on_load="begin()">
+      <text text="GPIO input conformance"/>
+      <text bind="{state.completions}"/>
+      <text bind="{state.level}"/>
+      <button text="Close subscription" on_press="finish()"/>
+    </column>
+  </page>
+
+  <script><![CDATA[
+    fn opened(operation, status, device) {
+      state.device = device;
+      state.last_status = status;
+      state.completions = state.completions + 1i64;
+      if (status == 0i64) {
+        io.configure(device, 0i64, 1i64, false, "configured");
+      }
+    }
+
+    fn configured(operation, status, result) {
+      state.last_status = status;
+      state.completions = state.completions + 1i64;
+      if (status == 0i64) {
+        io.read(state.device, "read_completed");
+      }
+    }
+
+    fn read_completed(operation, status, level) {
+      state.level = level;
+      state.last_status = status;
+      state.timestamp_ns = io.metadata(operation, 2i64);
+      state.completions = state.completions + 1i64;
+      if (status == 0i64) {
+        io.subscribe(state.device, 2i64, "subscribed", "notification");
+      }
+    }
+
+    fn subscribed(operation, status, subscription) {
+      state.subscription = subscription;
+      state.last_status = status;
+      state.completions = state.completions + 1i64;
+      log("GPIO subscription ready");
+    }
+
+    fn notification(subscription, status, level) {
+      state.level = level;
+      state.last_status = status;
+      state.edges = state.edges + 1i64;
+      log("GPIO notification");
+    }
+
+    fn finish() {
+      io.unsubscribe(state.device, state.subscription, "unsubscribed");
+    }
+
+    fn unsubscribed(operation, status, result) {
+      state.last_status = status;
+      state.completions = state.completions + 1i64;
+      if (status == 0i64) {
+        io.close(state.device, "closed");
+      }
+    }
+
+    fn closed(operation, status, result) {
+      state.completions = state.completions + 1i64;
+      state.last_status = status;
+      if (status == 0i64) {
+        log("GPIO conformance complete");
+      }
+    }
+
+    fn begin() {
+      io.open(1i64, "user_button", 0i64, "opened");
+    }
+  ]]></script>
+</microbrowser>

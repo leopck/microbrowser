@@ -1,0 +1,4 @@
+config NRF_DEFAULT_BLUETOOTH
+	default y
+
+source "share/sysbuild/Kconfig"

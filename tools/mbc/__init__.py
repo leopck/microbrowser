@@ -1,4 +1,4 @@
-"""Compile Microbrowser XML applications into version-2 packages."""
+"""Compile Microbrowser XML applications into MBPK versions 2 and 3."""
 
 from .compiler import build_package, compile_file
 from .errors import CompileError, PackageError, PngError

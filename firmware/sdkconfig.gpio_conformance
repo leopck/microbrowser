@@ -1,0 +1,8 @@
+# Development-only ESP32-S3 owner reservation for examples/gpio_conformance.mb.
+# GPIO4 is a static example choice, not an auto-detected board connection.
+# ESP-IDF QEMU has no physical button or GPIO edge/IRQ stimulus. Running this
+# package in QEMU must not be reported as an edge/IRQ conformance test.
+CONFIG_MB_GPIO=y
+CONFIG_MB_GPIO_USER_BUTTON=y
+CONFIG_MB_GPIO_USER_BUTTON_PIN=4
+CONFIG_MB_GPIO_STATUS_LED=n

@@ -1,0 +1,381 @@
+<microbrowser name="Native GATT conformance">
+  <state>
+    <field name="device" type="handle" value=""/>
+    <field name="pending" type="handle" value=""/>
+    <field name="connection_subscription" type="handle" value=""/>
+    <field name="characteristic_subscription" type="handle" value=""/>
+    <field name="peer" type="bytes" value="000000000000"/>
+    <field name="peer_random" type="bool" value="false"/>
+    <field name="last_status" type="i64" value="0"/>
+    <field name="completions" type="i64" value="0"/>
+    <field name="notifications" type="i64" value="0"/>
+    <field name="disconnection_events" type="i64" value="0"/>
+    <field name="started" type="bool" value="false"/>
+    <field name="connected_event_seen" type="bool" value="false"/>
+    <field name="trigger_written" type="bool" value="false"/>
+    <field name="characteristic_removal_requested" type="bool" value="false"/>
+    <field name="disconnect_completed" type="bool" value="false"/>
+    <field name="connection_removal_requested" type="bool" value="false"/>
+    <field name="failed" type="bool" value="false"/>
+    <field name="closing" type="bool" value="false"/>
+  </state>
+
+  <hardware>
+    <require capability="ble_central" version="1.0"/>
+    <permission endpoint="ble_central"/>
+  </hardware>
+
+  <page name="conformance">
+    <column padding="12" gap="8" on_load="begin()">
+      <text text="Native BLE GATT central"/>
+      <text bind="{state.completions}"/>
+      <text bind="{state.notifications}"/>
+      <text bind="{state.last_status}"/>
+    </column>
+  </page>
+
+  <script><![CDATA[
+    fn service_uuid() {
+      return io.bytes("00ff");
+    }
+
+    fn characteristic_uuid() {
+      return io.bytes("01ff");
+    }
+
+    fn readonly_uuid() {
+      return io.bytes("02ff");
+    }
+
+    fn initial_value() {
+      return io.bytes("00ff80");
+    }
+
+    fn written_value() {
+      return io.bytes("c32800ff");
+    }
+
+    fn trigger_value() {
+      return io.bytes("8000ffc328");
+    }
+
+    fn advertises_fixture_service(advertisement) {
+      let encoded_uuid = io.bytes("030300ff");
+      let uuid_size = io.bytes_length(encoded_uuid);
+      let advertisement_size = io.bytes_length(advertisement);
+      if (advertisement_size < uuid_size) {
+        return false;
+      }
+      let offset = 0i64;
+      while (offset + uuid_size <= advertisement_size) {
+        let index = 0i64;
+        while (index < uuid_size &&
+               io.byte_at(advertisement, offset + index) ==
+                 io.byte_at(encoded_uuid, index)) {
+          index = index + 1i64;
+        }
+        if (index == uuid_size) {
+          return true;
+        }
+        offset = offset + 1i64;
+      }
+      return false;
+    }
+
+    fn abort(status) {
+      state.last_status = status;
+      state.failed = true;
+      log("GATT operation failed: " + string(io.number(status)));
+      if (!state.closing) {
+        state.closing = true;
+        state.pending = io.close(state.device, "closed");
+      }
+    }
+
+    fn accepts(operation, status) {
+      if (operation != state.pending) {
+        abort(status);
+        return false;
+      }
+      state.completions = state.completions + 1i64;
+      state.last_status = status;
+      if (status != 0i64) {
+        abort(status);
+        return false;
+      }
+      return true;
+    }
+
+    fn begin() {
+      if (state.started) {
+        return;
+      }
+      state.started = true;
+      state.pending = io.open(15i64, "ble_central", 0i64, "opened");
+    }
+
+    fn opened(operation, status, device) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      if (io.metadata(operation, 4i64) || io.metadata(operation, 5i64) != 1i64) {
+        abort(status);
+        return;
+      }
+      state.device = device;
+      state.pending = io.discover(state.device, 0i64, io.bytes(), io.bytes(), 4i64,
+                                  "scanned");
+    }
+
+    fn scanned(operation, status, peers) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      if (io.metadata(operation, 40i64) != 1i64 ||
+          !advertises_fixture_service(io.metadata(operation, 44i64, 0i64))) {
+        state.peer = io.metadata(operation, 41i64, 0i64);
+        state.peer_random = io.metadata(operation, 42i64, 0i64);
+        state.pending = io.subscribe(state.device, 0i64, io.bytes(), io.bytes(),
+                                     "connection_subscribed", "connection_event");
+      } else {
+        abort(status);
+      }
+    }
+
+    fn connection_subscribed(operation, status, subscription) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      state.connection_subscription = subscription;
+      state.pending = io.connect(state.device, state.peer, state.peer_random, 4000i64,
+                                 "connected");
+    }
+
+    fn connection_event(subscription, status, connected) {
+      if (subscription != state.connection_subscription) {
+        abort(status);
+        return;
+      }
+      if (status != 0i64) {
+        abort(status);
+        return;
+      }
+      if (connected) {
+        state.connected_event_seen = true;
+        if (!io.metadata(subscription, 51i64) || io.metadata(subscription, 54i64) ||
+            io.metadata(subscription, 52i64) != state.peer ||
+            io.metadata(subscription, 53i64) != state.peer_random) {
+          abort(status);
+        }
+        return;
+      }
+      if (!state.connected_event_seen || io.metadata(subscription, 51i64)) {
+        return;
+      }
+      state.disconnection_events = state.disconnection_events + 1i64;
+      log("GATT disconnected callback verified");
+      advance_disconnection();
+    }
+
+    fn connected(operation, status, linked) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      if (!linked || !io.metadata(operation, 51i64) || io.metadata(operation, 54i64) ||
+          io.metadata(operation, 52i64) != state.peer ||
+          io.metadata(operation, 53i64) != state.peer_random) {
+        abort(status);
+        return;
+      }
+      state.pending = io.discover(state.device, 1i64, service_uuid(), io.bytes(), 16i64,
+                                  "services_discovered");
+    }
+
+    fn services_discovered(operation, status, services) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      if (io.metadata(operation, 45i64) != 1i64) {
+        abort(status);
+        return;
+      }
+      state.pending = io.discover(state.device, 2i64, service_uuid(), io.bytes(), 32i64,
+                                  "characteristics_discovered");
+    }
+
+    fn characteristics_discovered(operation, status, characteristics) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      if (io.metadata(operation, 45i64) != 2i64 ||
+          io.metadata(operation, 46i64, 0i64) != service_uuid() ||
+          io.metadata(operation, 47i64, 0i64) != characteristic_uuid() ||
+          !io.metadata(operation, 48i64, 0i64) ||
+          !io.metadata(operation, 49i64, 0i64) ||
+          !io.metadata(operation, 50i64, 0i64) ||
+          io.metadata(operation, 46i64, 1i64) != service_uuid() ||
+          io.metadata(operation, 47i64, 1i64) != readonly_uuid() ||
+          !io.metadata(operation, 48i64, 1i64) ||
+          io.metadata(operation, 49i64, 1i64) ||
+          io.metadata(operation, 50i64, 1i64)) {
+        abort(status);
+        return;
+      }
+      state.pending = io.read(state.device, service_uuid(), characteristic_uuid(),
+                              "initial_read");
+    }
+
+    fn initial_read(operation, status, value) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      if (value != initial_value() || io.metadata(operation, 57i64) != initial_value() ||
+          io.metadata(operation, 55i64) != service_uuid() ||
+          io.metadata(operation, 56i64) != characteristic_uuid()) {
+        abort(status);
+        return;
+      }
+      log("GATT initial value verified");
+      state.pending = io.write(state.device, service_uuid(), characteristic_uuid(), 0i64,
+                               written_value(), "written");
+    }
+
+    fn written(operation, status, byte_count) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      if (byte_count != 4i64 || io.metadata(operation, 24i64) != 4i64) {
+        abort(status);
+        return;
+      }
+      state.pending = io.read(state.device, service_uuid(), characteristic_uuid(),
+                              "write_read");
+    }
+
+    fn write_read(operation, status, value) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      if (value != written_value() || io.metadata(operation, 57i64) != written_value()) {
+        abort(status);
+        return;
+      }
+      log("GATT value verified after write");
+      state.pending = io.write(state.device, service_uuid(), readonly_uuid(), 0i64,
+                               written_value(), "readonly_rejected");
+    }
+
+    fn readonly_rejected(operation, status, result) {
+      if (operation != state.pending) {
+        abort(status);
+        return;
+      }
+      state.completions = state.completions + 1i64;
+      state.last_status = status;
+      if (status == 0i64) {
+        abort(status);
+        return;
+      }
+      log("GATT readonly rejected");
+      state.pending = io.subscribe(state.device, 1i64, service_uuid(),
+                                   characteristic_uuid(), "characteristic_subscribed",
+                                   "notification");
+    }
+
+    fn characteristic_subscribed(operation, status, subscription) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      state.characteristic_subscription = subscription;
+      state.pending = io.write(state.device, service_uuid(), characteristic_uuid(), 0i64,
+                               trigger_value(), "trigger_written");
+    }
+
+    fn trigger_written(operation, status, byte_count) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      if (byte_count != 5i64 || io.metadata(operation, 24i64) != 5i64) {
+        abort(status);
+        return;
+      }
+      state.trigger_written = true;
+      advance_notified_value();
+    }
+
+    fn notification(subscription, status, value) {
+      if (subscription != state.characteristic_subscription) {
+        abort(status);
+        return;
+      }
+      if (status != 0i64 || value != trigger_value() ||
+          io.metadata(subscription, 55i64) != service_uuid() ||
+          io.metadata(subscription, 56i64) != characteristic_uuid() ||
+          io.metadata(subscription, 57i64) != trigger_value()) {
+        abort(status);
+        return;
+      }
+      state.notifications = state.notifications + 1i64;
+      if (state.notifications != 1i64) {
+        abort(status);
+        return;
+      }
+      log("GATT notification verified");
+      advance_notified_value();
+    }
+
+    fn advance_notified_value() {
+      if (state.trigger_written && state.notifications == 1i64 &&
+          !state.characteristic_removal_requested) {
+        state.characteristic_removal_requested = true;
+        state.pending = io.unsubscribe(state.device, state.characteristic_subscription,
+                                       "characteristic_unsubscribed");
+      }
+    }
+
+    fn characteristic_unsubscribed(operation, status, result) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      state.pending = io.disconnect(state.device, state.peer, state.peer_random,
+                                    "disconnected");
+    }
+
+    fn disconnected(operation, status, linked) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      state.disconnect_completed = true;
+      advance_disconnection();
+    }
+
+    fn advance_disconnection() {
+      if (state.disconnect_completed && state.disconnection_events == 1i64 &&
+          !state.connection_removal_requested) {
+        state.connection_removal_requested = true;
+        state.pending = io.unsubscribe(state.device, state.connection_subscription,
+                                       "connection_unsubscribed");
+      }
+    }
+
+    fn connection_unsubscribed(operation, status, result) {
+      if (!accepts(operation, status)) {
+        return;
+      }
+      state.pending = io.close(state.device, "closed");
+    }
+
+    fn closed(operation, status, result) {
+      if (operation != state.pending || status != 0i64) {
+        abort(status);
+      }
+      state.completions = state.completions + 1i64;
+      if (state.failed) {
+        log("GATT conformance failed: " + string(io.number(state.last_status)));
+      } else {
+        state.last_status = status;
+        log("GATT conformance complete");
+      }
+    }
+  ]]></script>
+</microbrowser>

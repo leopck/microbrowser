@@ -1,10 +1,75 @@
-# Microbrowser package format, version 2
+# Microbrowser package format
 
 Integers are little-endian. A string ID is a zero-based `uint32_t` index into
 that package's `STRS` section. A missing state, function, or string reference
 must be rejected by the reader. Sizes are byte counts. A reader must reject
 truncation, section overflow, excessive nesting, trailing bytes in a section,
 invalid UTF-8 in strings, unknown value kinds, and a package size above 16 MiB.
+
+Versions 2 and 3 share the envelope and encoding below. Version 2 remains
+loadable by the shared native runtime, but does not carry hardware declarations
+and cannot express v3 values. Version 3 adds hardware application data and
+value types; an old decoder must not treat such a package as v2.
+
+## Version 3 hardware additions
+
+The envelope's major version is 3, minor 0. Required sections are `STRS`,
+`CAPS`, `PERM`, `STAT`, and `CODE`, followed by pages and assets. No unknown
+sections or duplicate required sections are accepted. Capability and operation
+identifiers come from `include/microbrowser/device_identity.h` and are
+append-only within this major ABI; do not renumber them.
+
+### Capabilities: `CAPS`
+
+`uint16_t count`, followed by `count` records:
+
+| Field | Encoding |
+|---|---|
+| Capability ID | `uint16_t` |
+| Major version | `uint16_t` |
+| Minor version | `uint16_t` |
+| Required flag | `uint8_t`, exactly 0 (optional) or 1 (required) |
+
+Current hardware applications use 1.0. An unknown or incompatible required
+capability is an error. Optional capabilities do not grant access: the matching
+named endpoint must also be advertised by the owner and in `PERM`.
+
+### Permissions: `PERM`
+
+`uint16_t count`, followed by `count` entries. Each entry has a `uint16_t`
+byte length followed by that many UTF-8 endpoint-name bytes, without a trailing
+NUL. Names use `[A-Za-z0-9_.-]+`, are at most 64 bytes, and identify a logical
+owner endpoint, never a pin, native pointer, or channel address.
+
+Names are deny-by-default. A required name not present in the owner session's
+intersection with these manifest grants cannot be opened before application
+initialization. Reader pages and website documents do not receive a hardware
+permission grant from this section.
+
+CRC32 covers these declarations as well as the other sections. It detects
+corruption, but it is not a publisher signature or evidence that an author was
+authenticated. HTTPS and native Run confirmation serve distinct trust roles.
+See [hardware-api.md](hardware-api.md) for publication and trust boundaries.
+
+### Version 3 values
+
+`STAT` fields, function constants, bytecode stack values and operation results
+use the same 0/1/2 basic tags as version 2 plus these payloads:
+
+| Tag | Type | Value encoding |
+|---|---|---|
+| 3 | `i64` | Signed 64-bit integer encoded as two's-complement `uint64_t` little-endian bits |
+| 4 | Immutable bytes | `uint32_t` size followed by that many arbitrary bytes; no UTF-8 requirement |
+| 5 | Handle marker | `uint16_t`, currently zero for the empty-handle initializer |
+
+Only the empty-handle marker is stored in a package/initial state. Device,
+operation and subscription handles are runtime resources obtained by opening
+an owner endpoint or subscribing; they carry separate capability, slot,
+application-generation and object-generation fields and cannot be persisted.
+Void is transient and is not a valid package constant or initial-state value.
+The same primitive encoding applies anywhere a v3 value is encoded. Malformed
+handle markers, invalid types, oversized buffers, inconsistent string IDs,
+truncation and trailing payload bytes fail parsing before execution.
 
 The source authoring language is documented in `authoring.md`.
 

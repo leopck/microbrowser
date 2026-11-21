@@ -101,6 +101,18 @@ void default_value(const Value& value, std::string_view format, std::span<char> 
         if (!format.empty() && format != "%s") throw std::invalid_argument("string value has an incompatible format");
         append_text(output, used, value.string);
         return;
+    case Value::Type::integer: {
+        if (!format.empty() && format != "%d" && format != "%s") {
+            throw std::invalid_argument("integer value has an incompatible format");
+        }
+        const auto converted = std::to_chars(number, number + sizeof(number), value.integer);
+        if (converted.ec != std::errc{}) throw std::invalid_argument("integer formatting failed");
+        append_text(output, used, std::string_view(number, converted.ptr - number));
+        return;
+    }
+    case Value::Type::bytes:
+    case Value::Type::handle:
+        throw std::invalid_argument("byte buffers and device handles have no text representation");
     case Value::Type::void_value:
         return;
     }

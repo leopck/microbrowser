@@ -729,6 +729,12 @@ application-specific prefix; storage keys are not automatically namespaced by
 page or document. The fallback is used when there is no record. A stored value
 of the wrong type raises a script error rather than silently converting it.
 
+Script persistence currently exposes the number, Boolean and string functions
+above. Numbers are the exact `f32` values held by UI state, not the separate
+signed `i64` hardware type. Resource handles are tied to an application
+generation: backends reject attempts to persist handles or raw buffer identity
+rather than turning them into integers.
+
 The counter uses `counter.value`, `counter.step`, `counter.enabled` and
 `counter.name`. `save_settings()` writes those records explicitly, while
 `load_saved()` supplies current state as each fallback. `restore_saved()` reloads

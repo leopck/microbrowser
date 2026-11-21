@@ -1,5 +1,7 @@
 #pragma once
 
+#include "microbrowser/device_identity.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -60,16 +62,31 @@ inline constexpr auto error = Color::rgb(188, 45, 62);
 } // namespace palette
 
 struct Value {
-    enum class Type : uint8_t { number = 0, boolean = 1, string = 2, void_value = 255 };
+    enum class Type : uint8_t {
+        number = 0,
+        boolean = 1,
+        string = 2,
+        integer = 3,
+        bytes = 4,
+        handle = 5,
+        void_value = 255,
+    };
 
     Type type = Type::void_value;
     float number = 0.0F;
     bool boolean = false;
+    std::int64_t integer = 0;
     std::string string;
+    ByteBufferPtr bytes;
+    DeviceHandle handle;
 
     [[nodiscard]] static Value from_number(float value);
     [[nodiscard]] static Value from_bool(bool value);
     [[nodiscard]] static Value from_string(std::string value);
+    [[nodiscard]] static Value from_integer(std::int64_t value);
+    [[nodiscard]] static Value from_bytes(ByteBuffer value);
+    [[nodiscard]] static Value from_bytes(ByteBufferPtr value);
+    [[nodiscard]] static Value from_handle(DeviceHandle value = {});
     [[nodiscard]] static Value from_void();
 };
 
@@ -187,6 +204,11 @@ struct Package {
     std::vector<Function> functions;
     std::vector<Page> pages;
     std::vector<Asset> assets;
+    std::uint16_t format_major = 2;
+    std::uint16_t format_minor = 0;
+    std::vector<CapabilityVersion> required_capabilities;
+    std::vector<CapabilityVersion> optional_capabilities;
+    std::vector<std::string> permission_endpoints;
 };
 
 } // namespace mb

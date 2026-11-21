@@ -1,0 +1,115 @@
+source "Kconfig.zephyr"
+
+menu "Microbrowser nRF application"
+
+config MB_HTTP_ENABLED
+	bool "Compile the real Zephyr HTTP transport"
+	default n
+	depends on NETWORKING && HTTP_CLIENT && WIFI && NET_CONNECTION_MANAGER && DNS_RESOLVER
+
+config MB_GATEWAY_URL
+	string "Owner gateway origin"
+	default "https://127.0.0.1:8765"
+
+config MB_ALLOW_PLAIN_HTTP
+
+	bool "Allow plaintext HTTP requests"
+	default n
+	depends on MB_HTTP_ENABLED
+config MB_STATUS_LED_ENABLED
+	bool "Register the board's led0 devicetree alias as status_led"
+	default n
+	depends on GPIO
+	help
+	  Uses the physical board's led0 alias with the existing native Zephyr GPIO
+	  backend. The logical endpoint is output-only; applications cannot choose
+	  the controller or pin. Enable this only for a board whose led0 is connected
+	  as intended. Devicetree active-low polarity is preserved.
+config MB_BLE_CENTRAL
+	bool "Enable the physical Nordic BLE GATT central"
+	default n
+	depends on BT_CENTRAL && BT_GATT_CLIENT
+	help
+	  Exposes only owner-declared BLE central endpoints through the shared
+	  device API. This requires the real network-core Bluetooth controller
+	  image; configuration does not emulate a controller. Peripheral role and
+	  pairing are not advertised by this profile.
+
+config MB_BLE_SCAN_TIMEOUT_MS
+	int "Bounded GATT peer discovery window in milliseconds"
+	default 5000
+	depends on MB_BLE_CENTRAL
+	range 100 60000
+	help
+	  Controls the native discovery window. Applications request a nonzero
+	  result limit, not a wall-clock deadline or a guaranteed number of peers.
+
+config MB_EVENT_LINK_ENABLED
+	bool "Register the owner-approved GPIO-to-DPPI COUNT/capture endpoint"
+	default n
+	depends on GPIO
+	help
+	  Exposes button_event on the board's sw1 alias, using an allocated GPIOTE
+	  channel, allocated DPPI resources, and the application owner's TIMER2.
+	  The application manifest must separately grant Event Link 1.0 and the
+	  button_event endpoint. Off by default; sw1 must not be reassigned while
+	  the route is open. Timer capture timestamps and pulse durations are not
+	  exposed by this endpoint.
+
+
+config MB_TLS_CA_SEC_TAG
+	int "Pre-provisioned CA credential security tag for HTTPS (-1 means unset)"
+	default -1
+	range -1 2147483647
+
+config MB_WIFI_CONNECT_TIMEOUT_MS
+	int "Wi-Fi association and DHCP timeout"
+	default 30000
+	range 1 300000
+
+config MB_SOCKET_CONNECT_TIMEOUT_MS
+	int "TCP and TLS connection timeout"
+	default 10000
+	range 1 120000
+
+config MB_HTTP_REQUEST_TIMEOUT_MS
+	int "Whole HTTP request timeout"
+	default 15000
+	range 1 120000
+
+config MB_HTTP_SHUTDOWN_TIMEOUT_MS
+	int "Worker teardown timeout including DNS"
+	default 90000
+	range 1000 900000
+
+config MB_HTTP_RECEIVE_BUFFER_BYTES
+	int "Per-active-job HTTP parser receive buffer"
+	default 2048
+	range 256 65536
+
+config MB_SCRIPT_RESPONSE_LIMIT_BYTES
+	int "Maximum script fetch response body"
+	default 65536
+	range 1 16777216
+
+config MB_CONTENT_RESPONSE_LIMIT_BYTES
+	int "Maximum reader content response body"
+	default 131072
+	range 1 16777216
+
+config MB_PACKAGE_FETCH_ENABLED
+	bool "Fetch one owner-selected replacement package at startup"
+	default n
+	depends on MB_HTTP_ENABLED && PSA_CRYPTO
+	select PSA_WANT_ALG_SHA_256
+
+config MB_PACKAGE_URL
+	string "HTTPS package URL selected by the board owner"
+	default ""
+
+config MB_PACKAGE_MAX_BYTES
+	int "Embedded and downloaded binary package byte cap"
+	default 65536
+	range 20 16777216
+
+endmenu

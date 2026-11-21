@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import Literal
 
 
 def missing_tool(name: str) -> None:
@@ -43,10 +44,11 @@ def prepare_flash(repository: Path, build: Path) -> Path:
 
 class QemuProcess:
     def __init__(self, repository: Path, screenshot: Path, show_window: bool, timeout_s: float,
-                 *, website: tuple[str, str] | None = None) -> None:
+                 *, firmware_build: Path, website: tuple[str, str] | None = None,
+                 scenario: Literal["dashboard", "gpio-conformance"] = "dashboard") -> None:
         if shutil.which("qemu-system-xtensa") is None:
             missing_tool("qemu-system-xtensa")
-        flash = prepare_flash(repository, repository / "firmware" / "build")
+        flash = prepare_flash(repository, firmware_build.resolve())
         command = [
             "qemu-system-xtensa", "-M", "esp32s3", "-m", "8M",
             "-drive", f"file={flash},if=mtd,format=raw",
@@ -69,6 +71,7 @@ class QemuProcess:
         self.output = bytearray()
         self.timeout_s = timeout_s
         self.website = website
+        self.scenario = scenario
 
     def wait_text(self, tokens: bytes | tuple[bytes, ...]) -> None:
         expected_tokens = (tokens,) if isinstance(tokens, bytes) else tokens
@@ -139,16 +142,29 @@ class QemuProcess:
     def run(self) -> None:
         try:
             self.wait_text(b"MICROBROWSER_QEMU_READY")
+            if self.scenario == "gpio-conformance":
+                self.wait_text(b"GPIO subscription ready")
             self.output.clear()
             self.send("page\r\n")
-            self.wait_text(b"PAGE name=dashboard")
+            expected_page = f"PAGE name={'dashboard' if self.scenario == 'dashboard' else 'conformance'} error_present=0"
+            self.wait_text(expected_page.encode())
             if b"COMMAND FAIL" in self.output:
                 raise RuntimeError("UART parser rejected or duplicated a CRLF-terminated command")
-            self.send("selftest\n")
-            self.output.clear()
-            self.wait_text((b"SELFTEST PASS", b"SELFTEST FAIL"))
-            if b"SELFTEST FAIL" in self.output:
-                raise RuntimeError("firmware reported SELFTEST FAIL")
+            if self.scenario == "dashboard":
+                self.send("selftest\n")
+                self.wait_text((b"SELFTEST PASS", b"SELFTEST FAIL"))
+                if b"SELFTEST FAIL" in self.output:
+                    raise RuntimeError("firmware reported SELFTEST FAIL")
+            else:
+                self.output.clear()
+                self.send("call finish\r\n")
+                self.wait_text((b"GPIO conformance complete", b"COMMAND FAIL"))
+                if b"COMMAND FAIL" in self.output:
+                    raise RuntimeError("GPIO app rejected the finish callback")
+                print("QEMU GPIO callbacks and close completed; no physical button/edge/IRQ stimulus")
+                self.output.clear()
+                self.send("page\r\n")
+                self.wait_text(b"PAGE name=conformance error_present=0")
             self.open_website()
             self.output.clear()
             self.send("stats\n")
@@ -180,6 +196,10 @@ def main() -> int:
     parser.add_argument("--url", help="open a website through the running Reader gateway")
     parser.add_argument("--expect-page", help="expected Reader page title when --url is used")
     parser.add_argument("--timeout", type=float, default=90.0)
+    parser.add_argument("--scenario", choices=("dashboard", "gpio-conformance"), default="dashboard",
+                        help="test dashboard self-test, or GPIO callbacks without emulated edge/IRQ stimulus")
+    parser.add_argument("--firmware-build", type=Path, required=True,
+                        help="ESP-IDF build directory containing the selected application and partition table")
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
@@ -188,7 +208,9 @@ def main() -> int:
     args.screenshot.parent.mkdir(parents=True, exist_ok=True)
     try:
             QemuProcess(repo, args.screenshot, not args.headless, args.timeout,
-                        website=(args.url, args.expect_page) if args.url else None).run()
+                        firmware_build=args.firmware_build,
+                        website=(args.url, args.expect_page) if args.url else None,
+                        scenario=args.scenario).run()
     except (RuntimeError, subprocess.SubprocessError, OSError) as error:
         print(f"QEMU smoke failed: {error}", file=sys.stderr)
         return 1

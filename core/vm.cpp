@@ -47,6 +47,7 @@ enum class Opcode : uint8_t {
     call = 22,
     builtin = 23,
     return_value = 24,
+    device_call = 25,
 };
 
 struct Instruction {
@@ -92,6 +93,7 @@ struct Instruction {
     case Opcode::jump_false: return "JUMP_FALSE";
     case Opcode::call: return "CALL";
     case Opcode::builtin: return "BUILTIN";
+    case Opcode::device_call: return "DEVICE_CALL";
     case Opcode::return_value: return "RETURN";
     }
     return "UNKNOWN";
@@ -115,7 +117,7 @@ Instruction decode_instruction(const Function& function, std::size_t pc) {
     }
     const uint8_t raw_opcode = function.code[pc];
     if (raw_opcode < static_cast<uint8_t>(Opcode::push_const) ||
-        raw_opcode > static_cast<uint8_t>(Opcode::return_value)) {
+        raw_opcode > static_cast<uint8_t>(Opcode::device_call)) {
         fail(function, pc, "unknown opcode " + std::to_string(raw_opcode));
     }
 
@@ -137,6 +139,7 @@ Instruction decode_instruction(const Function& function, std::size_t pc) {
         size = 2;
         break;
     case Opcode::call:
+    case Opcode::device_call:
         size = 4;
         break;
     case Opcode::builtin:
@@ -172,6 +175,7 @@ Instruction decode_instruction(const Function& function, std::size_t pc) {
         break;
     }
     case Opcode::call:
+    case Opcode::device_call:
         result.index = read_u16_immediate(function.code, pc + 1);
         result.argument_count = function.code[pc + 3];
         break;
@@ -255,6 +259,9 @@ Instruction decode_instruction(const Function& function, std::size_t pc) {
     case Value::Type::number: return "number";
     case Value::Type::boolean: return "boolean";
     case Value::Type::string: return "string";
+    case Value::Type::integer: return "integer";
+    case Value::Type::bytes: return "bytes";
+    case Value::Type::handle: return "device handle";
     case Value::Type::void_value: return "void";
     }
     return "invalid";
@@ -262,12 +269,35 @@ Instruction decode_instruction(const Function& function, std::size_t pc) {
 
 void require_scalar(const Value& value, const Function& function, std::size_t pc,
                     std::string_view description) {
-    if (value.type != Value::Type::number && value.type != Value::Type::boolean &&
-        value.type != Value::Type::string) {
-        fail(function, pc, std::string(description) + " is not a scalar value");
+    switch (value.type) {
+    case Value::Type::number:
+        if (!std::isfinite(value.number)) fail(function, pc, std::string(description) + " is not finite");
+        return;
+    case Value::Type::boolean:
+    case Value::Type::string:
+    case Value::Type::integer:
+        return;
+    case Value::Type::bytes:
+        if (value.bytes == nullptr) fail(function, pc, std::string(description) + " has no byte buffer");
+        return;
+    case Value::Type::handle:
+        if (!value.handle.is_empty() &&
+            (value.handle.capability == Capability::none || value.handle.slot == 0 ||
+             value.handle.object_generation == 0 || value.handle.owner_generation == 0)) {
+            fail(function, pc, std::string(description) + " has an invalid device handle");
+        }
+        return;
+    case Value::Type::void_value:
+        break;
     }
-    if (value.type == Value::Type::number && !std::isfinite(value.number)) {
-        fail(function, pc, std::string(description) + " is not finite");
+    fail(function, pc, std::string(description) + " is not a scalar value");
+}
+
+void require_package_value_abi(uint16_t format_major, const Value& value) {
+    if (format_major < 3 &&
+        (value.type == Value::Type::integer || value.type == Value::Type::bytes ||
+         value.type == Value::Type::handle)) {
+        throw ScriptError("hardware value kinds require package major version 3");
     }
 }
 
@@ -286,6 +316,7 @@ void validate_function(const Package& package, const Function& function) {
     }
     for (const Value& constant : function.constants) {
         require_scalar(constant, function, 0, "constant");
+        require_package_value_abi(package.format_major, constant);
     }
 
     std::vector<uint8_t> boundaries(function.code.size() + 1, 0);
@@ -325,6 +356,18 @@ void validate_function(const Package& package, const Function& function) {
                 fail(function, pc, "CALL argument count does not match the target function arity");
             }
             break;
+        case Opcode::device_call:
+            if (package.format_major < 3) {
+                fail(function, pc, "device calls require package major version 3");
+            }
+            if (instruction.index == 0 ||
+                (instruction.index > 16 && (instruction.index < 200 || instruction.index > 210))) {
+                fail(function, pc, "unknown device call " + std::to_string(instruction.index));
+            }
+            if (instruction.argument_count > 8) {
+                fail(function, pc, "device call has more than eight arguments");
+            }
+            break;
         case Opcode::builtin: {
             if (instruction.immediate > 28) {
                 fail(function, pc, "unknown builtin ID " + std::to_string(instruction.immediate));
@@ -354,6 +397,9 @@ void validate_function(const Package& package, const Function& function) {
 }
 
 void validate_package_for_execution(const Package& package) {
+    if ((package.format_major != 2 && package.format_major != 3) || package.format_minor != 0) {
+        throw ScriptError("unsupported package format version");
+    }
     if (package.states.size() > max_states) {
         throw ScriptError("script package has more than 256 state fields");
     }
@@ -364,6 +410,7 @@ void validate_package_for_execution(const Package& package) {
         Function context;
         context.name = "package state '" + state.name + "'";
         require_scalar(state.initial, context, 0, "initial state");
+        require_package_value_abi(package.format_major, state.initial);
     }
     for (const Function& function : package.functions) {
         validate_function(package, function);
@@ -389,7 +436,9 @@ Frame make_frame(const Function& function, std::span<const Value> arguments) {
     frame.locals.resize(function.local_count);
     frame.operands.reserve(max_operands);
     for (std::size_t index = 0; index < arguments.size(); ++index) {
-        require_scalar(arguments[index], function, 0, "function argument");
+        if (arguments[index].type != Value::Type::void_value) {
+            require_scalar(arguments[index], function, 0, "function argument");
+        }
         frame.locals[index] = arguments[index];
     }
     return frame;
@@ -466,17 +515,52 @@ Value evaluate_add(Value left, Value right, const Function& function, std::size_
     if (left.type == Value::Type::number && right.type == Value::Type::number) {
         return make_numeric_result(left.number + right.number, function, pc, "ADD");
     }
+    if (left.type == Value::Type::integer && right.type == Value::Type::integer) {
+        int64_t result = 0;
+        if (__builtin_add_overflow(left.integer, right.integer, &result)) {
+            fail(function, pc, "ADD overflows a signed 64-bit integer");
+        }
+        return Value::from_integer(result);
+    }
     if (left.type == Value::Type::string && right.type == Value::Type::string) {
         left.string.append(right.string);
         return left;
     }
-    fail(function, pc, "ADD requires two numbers or two strings");
+    fail(function, pc, "ADD requires two numbers, two integers, or two strings");
 }
 
 Value evaluate_binary_numeric(Opcode opcode, const Value& left, const Value& right,
                               const Function& function, std::size_t pc) {
-    if (left.type != Value::Type::number || right.type != Value::Type::number) {
-        fail(function, pc, std::string(opcode_name(opcode)) + " requires two numbers");
+    const bool float_operands = left.type == Value::Type::number && right.type == Value::Type::number;
+    const bool integer_operands = left.type == Value::Type::integer && right.type == Value::Type::integer;
+    if (!float_operands && !integer_operands) {
+        fail(function, pc, std::string(opcode_name(opcode)) + " requires two matching numeric types");
+    }
+    if (integer_operands) {
+        int64_t result = 0;
+        switch (opcode) {
+        case Opcode::subtract:
+            if (__builtin_sub_overflow(left.integer, right.integer, &result)) {
+                fail(function, pc, "SUBTRACT overflows a signed 64-bit integer");
+            }
+            return Value::from_integer(result);
+        case Opcode::multiply:
+            if (__builtin_mul_overflow(left.integer, right.integer, &result)) {
+                fail(function, pc, "MULTIPLY overflows a signed 64-bit integer");
+            }
+            return Value::from_integer(result);
+        case Opcode::divide:
+            if (right.integer == 0) fail(function, pc, "division by zero");
+            if (left.integer == std::numeric_limits<int64_t>::min() && right.integer == -1) {
+                fail(function, pc, "DIVIDE overflows a signed 64-bit integer");
+            }
+            return Value::from_integer(left.integer / right.integer);
+        case Opcode::less: return Value::from_bool(left.integer < right.integer);
+        case Opcode::less_equal: return Value::from_bool(left.integer <= right.integer);
+        case Opcode::greater: return Value::from_bool(left.integer > right.integer);
+        case Opcode::greater_equal: return Value::from_bool(left.integer >= right.integer);
+        default: fail(function, pc, "internal numeric opcode mismatch");
+        }
     }
     switch (opcode) {
     case Opcode::subtract:
@@ -484,20 +568,13 @@ Value evaluate_binary_numeric(Opcode opcode, const Value& left, const Value& rig
     case Opcode::multiply:
         return make_numeric_result(left.number * right.number, function, pc, "MULTIPLY");
     case Opcode::divide:
-        if (right.number == 0.0F) {
-            fail(function, pc, "division by zero");
-        }
+        if (right.number == 0.0F) fail(function, pc, "division by zero");
         return make_numeric_result(left.number / right.number, function, pc, "DIVIDE");
-    case Opcode::less:
-        return Value::from_bool(left.number < right.number);
-    case Opcode::less_equal:
-        return Value::from_bool(left.number <= right.number);
-    case Opcode::greater:
-        return Value::from_bool(left.number > right.number);
-    case Opcode::greater_equal:
-        return Value::from_bool(left.number >= right.number);
-    default:
-        fail(function, pc, "internal numeric opcode mismatch");
+    case Opcode::less: return Value::from_bool(left.number < right.number);
+    case Opcode::less_equal: return Value::from_bool(left.number <= right.number);
+    case Opcode::greater: return Value::from_bool(left.number > right.number);
+    case Opcode::greater_equal: return Value::from_bool(left.number >= right.number);
+    default: fail(function, pc, "internal numeric opcode mismatch");
     }
 }
 
@@ -517,6 +594,15 @@ Value evaluate_equality(Opcode opcode, const Value& left, const Value& right,
     case Value::Type::string:
         equal = left.string == right.string;
         break;
+    case Value::Type::integer:
+        equal = left.integer == right.integer;
+        break;
+    case Value::Type::bytes:
+        equal = left.bytes.get() == right.bytes.get() || *left.bytes == *right.bytes;
+        break;
+    case Value::Type::handle:
+        equal = left.handle == right.handle;
+        break;
     case Value::Type::void_value:
         fail(function, pc, "equality does not accept void operands");
     }
@@ -532,6 +618,10 @@ Value finish_return(std::vector<Frame>& frames) {
 
 } // namespace
 
+Value VmHost::device_call(std::uint16_t, std::span<const Value>) {
+    throw ScriptError("this script VM host does not provide peripheral access");
+}
+
 Value execute_script(const Package& package, uint32_t function_id,
                      std::span<const Value> arguments, VmHost& host,
                      uint32_t instruction_budget) {
@@ -542,6 +632,9 @@ Value execute_script(const Package& package, uint32_t function_id,
 
     std::vector<Frame> frames;
     frames.reserve(max_call_depth);
+    for (const Value& argument : arguments) {
+        require_package_value_abi(package.format_major, argument);
+    }
     frames.push_back(make_frame(package.functions[function_id], arguments));
     uint32_t instructions_left = std::min(instruction_budget, max_event_instructions);
 
@@ -615,8 +708,15 @@ Value execute_script(const Package& package, uint32_t function_id,
         }
         case Opcode::negate: {
             Value value = pop_operand(frame, pc);
+            if (value.type == Value::Type::integer) {
+                if (value.integer == std::numeric_limits<int64_t>::min()) {
+                    fail(function, pc, "NEGATE overflows a signed 64-bit integer");
+                }
+                push_operand(frame, Value::from_integer(-value.integer), pc);
+                break;
+            }
             if (value.type != Value::Type::number) {
-                fail(function, pc, "NEGATE requires a number");
+                fail(function, pc, "NEGATE requires a number or an integer");
             }
             push_operand(frame, make_numeric_result(-value.number, function, pc, "NEGATE"), pc);
             break;
@@ -673,6 +773,18 @@ Value execute_script(const Package& package, uint32_t function_id,
             }
             if (result.type == Value::Type::number && !std::isfinite(result.number)) {
                 fail(function, pc, "builtin returned a non-finite number");
+            }
+            push_operand(frame, std::move(result), pc);
+            break;
+        }
+        case Opcode::device_call: {
+            std::vector<Value> call_arguments = pop_arguments(frame, instruction.argument_count, pc);
+            Value result = host_call(
+                [&]() { return host.device_call(instruction.index, call_arguments); }, function, pc,
+                "device call " + std::to_string(instruction.index));
+            require_scalar(result, function, pc, "device call result");
+            if (result.type == Value::Type::void_value && instruction.index != 11) {
+                fail(function, pc, "device call unexpectedly returned no value");
             }
             push_operand(frame, std::move(result), pc);
             break;

@@ -23,6 +23,8 @@ The first run creates `.tools/gateway-venv`, installs the pinned Playwright and 
 
 Set `MICROBROWSER_CHROMIUM_EXECUTABLE=/path/to/chrome` if Chrome or Chromium is not in its usual installed location. HTML extraction and URL validation use the standard library. Pillow is needed for image conversion; Playwright is needed only for interactive browsing.
 
+`MICROBROWSER_CHROMIUM_EXECUTABLE` takes precedence when set. Otherwise the gateway looks for installed Playwright-managed Chromium, Chrome/Chromium on `PATH`, then the usual macOS application path. The Linux CI job installs Playwright's matching Chromium before running `make web-test`, so the real-browser test is not skipped for lack of a macOS installation.
+
 Reader and asset requests block non-global IPv4/IPv6 addresses, loopback/local hostnames, URL userinfo and non-HTTP(S) schemes, including every resolved address and redirect destination. `--allow-private-hosts` lifts that restriction only for trusted local Reader and image fixtures. Interactive requests always use the public-origin policy, even when this flag is set.
 
 The listener is trusted and unauthenticated, and emits no permissive CORS headers. Do not expose it to an untrusted network. Chromium isolation is not a hardened sandbox for hostile websites: enabling interactive browsing means explicitly consenting to that page's JavaScript running on the gateway host. The native client verifies gateway TLS by default outside loopback; `--insecure-gateway` is a separate development override.

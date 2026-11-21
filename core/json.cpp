@@ -813,6 +813,10 @@ Value read_json_scalar(std::string_view document, std::string_view path,
         }
         result.string = selected.string;
         break;
+    case Value::Type::integer:
+    case Value::Type::bytes:
+    case Value::Type::handle:
+        throw ScriptError("JSON reader requires a number, boolean, or string result type");
     case Value::Type::void_value:
         break;
     }

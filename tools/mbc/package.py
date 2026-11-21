@@ -6,11 +6,23 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from .device_api import (
+    CAPABILITY_IDS,
+    ENDPOINT_RE,
+    EMPTY_HANDLE,
+    CAPABILITY_NAMES,
+    IO_BY_ID,
+    MAX_BYTES_PER_BUFFER,
+    MAX_ENDPOINT_BYTES,
+    ScriptValue,
+    ValueType,
+)
 from .errors import PackageError
-from .script import BUILTINS, Opcode, ValueType
+from .script import BUILTINS, Opcode
 
 MAGIC = b"MBPK"
 VERSION_MAJOR = 2
+HARDWARE_VERSION_MAJOR = 3
 VERSION_MINOR = 0
 FONT_SIZES = (12, 14, 16, 20, 28, 36)
 FONT_WEIGHTS = (400, 600)
@@ -93,19 +105,25 @@ NO_IMMEDIATE_OPS = {
     Opcode.RETURN,
 }
 
-
 @dataclass(frozen=True, slots=True)
 class DecodedConstant:
     type: ValueType
-    value: float | bool | str
+    value: ScriptValue
 
 
 @dataclass(frozen=True, slots=True)
 class DecodedState:
     name: str
     type: ValueType
-    value: float | bool | str
+    value: ScriptValue
 
+
+@dataclass(frozen=True, slots=True)
+class DecodedCapability:
+    capability_id: int
+    major: int
+    minor: int
+    required: bool
 
 @dataclass(frozen=True, slots=True)
 class DecodedFunction:
@@ -151,10 +169,10 @@ class DecodedPackage:
     pages: tuple[DecodedPage, ...]
     assets: tuple[DecodedAsset, ...]
     crc32: int
-
-    @property
-    def node_count(self) -> int:
-        return sum(count_nodes(page.root) for page in self.pages)
+    major: int = VERSION_MAJOR
+    minor: int = VERSION_MINOR
+    capabilities: tuple[DecodedCapability, ...] = ()
+    permission_endpoints: tuple[str, ...] = ()
 
 
 class _Reader:
@@ -200,6 +218,9 @@ class _Reader:
 
     def f32(self, what: str) -> float:
         return float(self.unpack("<f", what)[0])
+
+    def i64(self, what: str) -> int:
+        return int(self.unpack("<q", what)[0])
 
     def finish(self) -> None:
         if self.remaining:
@@ -250,7 +271,7 @@ def _string(strings: tuple[str, ...], index: int, what: str) -> str:
     return strings[index]
 
 
-def _constant(reader: _Reader, strings: tuple[str, ...]) -> DecodedConstant:
+def _constant(reader: _Reader, strings: tuple[str, ...], major: int) -> DecodedConstant:
     tag = reader.u8("value kind")
     if tag == 0:
         return DecodedConstant(ValueType.NUMBER, reader.f32("number value"))
@@ -262,10 +283,26 @@ def _constant(reader: _Reader, strings: tuple[str, ...]) -> DecodedConstant:
     if tag == 2:
         index = reader.u32("string value ID")
         return DecodedConstant(ValueType.STRING, _string(strings, index, "value"))
-    raise PackageError(f"unknown value kind {tag}")
+    if tag not in (3, 4, 5):
+        raise PackageError(f"unknown value kind {tag}")
+    if major < HARDWARE_VERSION_MAJOR:
+        raise PackageError(f"value kind {tag} requires package major version 3")
+    if tag == 3:
+        return DecodedConstant(ValueType.INTEGER, reader.i64("i64 value"))
+    if tag == 4:
+        length = reader.u32("bytes length")
+        if length > MAX_BYTES_PER_BUFFER:
+            raise PackageError(f"bytes value exceeds {MAX_BYTES_PER_BUFFER} bytes")
+        return DecodedConstant(ValueType.BYTES, reader.take(length, "bytes value"))
+    if tag == 5:
+        if reader.u16("empty handle reserved value") != 0:
+            raise PackageError("only an empty handle with reserved value zero may be packaged")
+        return DecodedConstant(ValueType.HANDLE, EMPTY_HANDLE)
 
 
-def _states(payload: bytes, offset: int, strings: tuple[str, ...]) -> tuple[DecodedState, ...]:
+def _states(
+    payload: bytes, offset: int, strings: tuple[str, ...], major: int
+) -> tuple[DecodedState, ...]:
     if not strings:
         raise PackageError("STAT requires a valid STRS section")
     reader = _Reader(payload, offset, "STAT")
@@ -279,12 +316,60 @@ def _states(payload: bytes, offset: int, strings: tuple[str, ...]) -> tuple[Deco
         if name in names:
             raise PackageError(f"duplicate state name {name!r}")
         names.add(name)
-        initial = _constant(reader, strings)
+        initial = _constant(reader, strings, major)
         if initial.type == ValueType.VOID:
             raise PackageError("state cannot have void type")
         states.append(DecodedState(name, initial.type, initial.value))
     reader.finish()
     return tuple(states)
+
+
+def _capabilities(payload: bytes, offset: int) -> tuple[DecodedCapability, ...]:
+    reader = _Reader(payload, offset, "CAPS")
+    count = reader.u16("capability count")
+    capabilities: list[DecodedCapability] = []
+    identifiers: set[int] = set()
+    for _ in range(count):
+        capability_id = reader.u16("capability ID")
+        major = reader.u16("capability major version")
+        minor = reader.u16("capability minor version")
+        required = reader.u16("capability required flag")
+        if capability_id not in CAPABILITY_IDS:
+            raise PackageError(f"unrecognized capability ID {capability_id}")
+        if capability_id in identifiers:
+            raise PackageError(f"duplicate capability {CAPABILITY_NAMES[capability_id]!r}")
+        identifiers.add(capability_id)
+        if major != 1:
+            raise PackageError(f"capability {CAPABILITY_NAMES[capability_id]!r} requires major version 1")
+        if required not in (0, 1):
+            raise PackageError("capability required flag must be exactly zero or one")
+        capabilities.append(DecodedCapability(capability_id, major, minor, bool(required)))
+    reader.finish()
+    return tuple(capabilities)
+
+
+def _permissions(payload: bytes, offset: int) -> tuple[str, ...]:
+    reader = _Reader(payload, offset, "PERM")
+    count = reader.u16("endpoint count")
+    endpoints: list[str] = []
+    names: set[str] = set()
+    for _ in range(count):
+        length = reader.u16("endpoint UTF-8 byte length")
+        raw = reader.take(length, "endpoint name")
+        try:
+            name = raw.decode("ascii")
+        except UnicodeDecodeError as error:
+            raise PackageError("permission endpoint must be ASCII") from error
+        if not 1 <= len(name) <= MAX_ENDPOINT_BYTES or not ENDPOINT_RE.fullmatch(name):
+            raise PackageError(
+                "permission endpoint must match [A-Za-z0-9_.-]+ and be 1 through 64 ASCII bytes"
+            )
+        if name in names:
+            raise PackageError(f"duplicate permission endpoint {name!r}")
+        names.add(name)
+        endpoints.append(name)
+    reader.finish()
+    return tuple(endpoints)
 
 
 def _instructions(
@@ -293,6 +378,7 @@ def _instructions(
     constant_count: int,
     local_count: int,
     state_count: int,
+    major: int,
 ) -> list[tuple[int, int]]:
     reader = _Reader(code, offset, "function code")
     boundaries: set[int] = set()
@@ -332,6 +418,18 @@ def _instructions(
                 raise PackageError(
                     f"builtin ID {builtin_id} expects {len(builtin.arguments)} arguments, found {arguments}"
                 )
+        elif opcode == Opcode.DEVICE_CALL:
+            if major < HARDWARE_VERSION_MAJOR:
+                raise PackageError("device calls require package major version 3")
+            operation = reader.u16("device operation")
+            arguments = reader.u8("device argument count")
+            device_call = IO_BY_ID.get(operation)
+            if device_call is None:
+                raise PackageError(f"unknown device operation {operation}")
+            if not device_call.accepts_arity(arguments):
+                raise PackageError(
+                    f"device operation {operation} has no prototype for {arguments} arguments"
+                )
         elif opcode not in NO_IMMEDIATE_OPS:
             raise PackageError(f"unhandled opcode {raw_opcode}")
     for instruction, target in jumps:
@@ -343,7 +441,7 @@ def _instructions(
 
 
 def _functions(
-    payload: bytes, offset: int, strings: tuple[str, ...], states: tuple[DecodedState, ...]
+    payload: bytes, offset: int, strings: tuple[str, ...], states: tuple[DecodedState, ...], major: int
 ) -> tuple[DecodedFunction, ...]:
     reader = _Reader(payload, offset, "CODE")
     count = reader.u32("function count")
@@ -367,10 +465,10 @@ def _functions(
             raise PackageError("function code exceeds 65,535 bytes")
         if constant_count > MAX_CONSTANTS:
             raise PackageError("function exceeds 256 constants")
-        constants = tuple(_constant(reader, strings) for _ in range(constant_count))
+        constants = tuple(_constant(reader, strings, major) for _ in range(constant_count))
         code_offset = offset + reader.position
         code = reader.take(code_size, "function bytecode")
-        calls = _instructions(code, code_offset, len(constants), local_count, len(states))
+        calls = _instructions(code, code_offset, len(constants), local_count, len(states), major)
         all_calls.append(calls)
         functions.append(
             DecodedFunction(name, parameter_count, local_count, code, constants)
@@ -512,6 +610,31 @@ def _assets(
     return tuple(assets)
 
 
+def _read_sections(data: bytes, major: int, count: int) -> list[tuple[bytes, bytes, int]]:
+    sections: list[tuple[bytes, bytes, int]] = []
+    offset = HEADER_SIZE
+    legacy_ids = (b"STRS", b"STAT", b"CODE", b"PAGE", b"DATA")
+    v3_ids = (*legacy_ids, b"CAPS", b"PERM")
+    allowed_ids = legacy_ids if major == VERSION_MAJOR else v3_ids
+    for _ in range(count):
+        if len(data) - offset < 8:
+            raise PackageError("truncated section header")
+        section_id = data[offset : offset + 4]
+        size = struct.unpack_from("<I", data, offset + 4)[0]
+        payload_offset = offset + 8
+        end = payload_offset + size
+        if end > len(data):
+            name = section_id.decode("ascii", errors="replace")
+            raise PackageError(f"truncated {name} section")
+        if section_id not in allowed_ids:
+            raise PackageError(f"unknown section {section_id!r}")
+        sections.append((section_id, data[payload_offset:end], payload_offset))
+        offset = end
+    if offset != len(data):
+        raise PackageError("section count leaves trailing package bytes")
+    return sections
+
+
 def decode_package(data: bytes) -> DecodedPackage:
     if len(data) < HEADER_SIZE:
         raise PackageError("package is shorter than its 20-byte header")
@@ -522,7 +645,7 @@ def decode_package(data: bytes) -> DecodedPackage:
     )
     if magic != MAGIC:
         raise PackageError("bad package magic")
-    if (major, minor) != (VERSION_MAJOR, VERSION_MINOR):
+    if major not in (VERSION_MAJOR, HARDWARE_VERSION_MAJOR) or minor != VERSION_MINOR:
         raise PackageError(f"unsupported package version {major}.{minor}")
     if total_size != len(data):
         raise PackageError(f"package header size {total_size} does not equal byte length {len(data)}")
@@ -532,36 +655,33 @@ def decode_package(data: bytes) -> DecodedPackage:
         raise PackageError(f"CRC32 mismatch: header has {expected_crc:08x}, calculated {actual_crc:08x}")
     if section_count < 4:
         raise PackageError("package requires STRS, STAT, CODE, and at least one PAGE")
-    sections: list[tuple[bytes, bytes, int]] = []
-    offset = HEADER_SIZE
-    for _ in range(section_count):
-        if len(data) - offset < 8:
-            raise PackageError("truncated section header")
-        section_id = data[offset : offset + 4]
-        size = struct.unpack_from("<I", data, offset + 4)[0]
-        payload_offset = offset + 8
-        end = payload_offset + size
-        if end > len(data):
-            name = section_id.decode("ascii", errors="replace")
-            raise PackageError(f"truncated {name} section")
-        if section_id not in (b"STRS", b"STAT", b"CODE", b"PAGE", b"DATA"):
-            raise PackageError(f"unknown section {section_id!r}")
-        sections.append((section_id, data[payload_offset:end], payload_offset))
-        offset = end
-    if offset != len(data):
-        raise PackageError("section count leaves trailing package bytes")
-    if [section[0] for section in sections[:3]] != [b"STRS", b"STAT", b"CODE"]:
-        raise PackageError("sections must begin with STRS, STAT, CODE in that order")
-    if sum(section[0] == b"STRS" for section in sections) != 1:
-        raise PackageError("exactly one STRS section is required")
-    if sum(section[0] == b"STAT" for section in sections) != 1:
-        raise PackageError("exactly one STAT section is required")
-    if sum(section[0] == b"CODE" for section in sections) != 1:
-        raise PackageError("exactly one CODE section is required")
+    sections = _read_sections(data, major, section_count)
+    state_index = 1
+    code_index = 2
+    capabilities: tuple[DecodedCapability, ...] = ()
+    permissions: tuple[str, ...] = ()
+    if major == HARDWARE_VERSION_MAJOR:
+        cursor = 1
+        if sections[cursor][0] == b"CAPS":
+            capabilities = _capabilities(*sections[cursor][1:])
+            cursor += 1
+        if sections[cursor][0] == b"PERM":
+            permissions = _permissions(*sections[cursor][1:])
+            cursor += 1
+        state_index = cursor
+        code_index = cursor + 1
+    if code_index >= len(sections) or sections[0][0] != b"STRS":
+        raise PackageError("package sections must begin with STRS")
+    if (sections[state_index][0], sections[code_index][0]) != (b"STAT", b"CODE"):
+        expected = "STRS, [CAPS], [PERM], STAT, CODE" if major == HARDWARE_VERSION_MAJOR else "STRS, STAT, CODE"
+        raise PackageError(f"sections must begin with {expected} in that order")
+    for section_id in (b"STRS", b"STAT", b"CODE"):
+        if sum(section[0] == section_id for section in sections) != 1:
+            raise PackageError(f"exactly one {section_id.decode()} section is required")
     page_sections: list[tuple[bytes, int]] = []
     asset_sections: list[tuple[bytes, int]] = []
     in_assets = False
-    for section_id, payload, payload_offset in sections[3:]:
+    for section_id, payload, payload_offset in sections[code_index + 1 :]:
         if section_id == b"PAGE":
             if in_assets:
                 raise PackageError("PAGE sections must precede DATA sections")
@@ -572,8 +692,8 @@ def decode_package(data: bytes) -> DecodedPackage:
         else:
             raise PackageError(f"misordered {section_id!r} section")
     strings = _strings(*sections[0][1:])
-    states = _states(*sections[1][1:], strings)
-    functions = _functions(*sections[2][1:], strings, states)
+    states = _states(*sections[state_index][1:], strings, major)
+    functions = _functions(*sections[code_index][1:], strings, states, major)
     pages = _pages(page_sections, strings, states, functions)
     assets = _assets(asset_sections, strings)
     asset_names = {asset.name for asset in assets}
@@ -588,9 +708,18 @@ def decode_package(data: bytes) -> DecodedPackage:
 
     for page in pages:
         check_images(page.root)
-    return DecodedPackage(strings, states, functions, pages, assets, expected_crc)
-
-
+    return DecodedPackage(
+        strings,
+        states,
+        functions,
+        pages,
+        assets,
+        expected_crc,
+        major,
+        minor,
+        capabilities,
+        permissions,
+    )
 def read_package(path: str | Path) -> DecodedPackage:
     try:
         data = Path(path).read_bytes()
@@ -609,7 +738,7 @@ def count_nodes(node: DecodedNode) -> int:
 def inspect_summary(path: str | Path, package: DecodedPackage) -> str:
     lines = [
         f"Package: {path}",
-        f"Version: {VERSION_MAJOR}.{VERSION_MINOR}",
+        f"Version: {package.major}.{package.minor}",
         f"Strings: {len(package.strings)}",
         f"State fields: {len(package.states)}",
     ]

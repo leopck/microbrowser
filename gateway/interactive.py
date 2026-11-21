@@ -9,6 +9,7 @@ import os
 import queue
 import re
 import secrets
+import shutil
 import threading
 import time
 from typing import TYPE_CHECKING
@@ -83,6 +84,37 @@ def require_playwright() -> None:
             "Interactive mode requires the pinned Playwright package.",
             503,
         )
+
+
+def find_chromium_executable(playwright: Playwright | None = None) -> str | None:
+    """Find an executable Chromium, reusing an active Playwright when supplied."""
+    configured = os.environ.get("MICROBROWSER_CHROMIUM_EXECUTABLE")
+    if configured:
+        executable = shutil.which(configured)
+        if executable is None:
+            raise GatewayError(
+                "browser_unavailable",
+                "MICROBROWSER_CHROMIUM_EXECUTABLE must name an executable browser.",
+                503,
+            )
+        return executable
+
+    managed_path = playwright.chromium.executable_path if playwright is not None else None
+    if playwright is None and _sync_playwright is not None:
+        with _sync_playwright() as driver:
+            return find_chromium_executable(driver)
+    candidates = (
+        managed_path,
+        shutil.which("google-chrome"),
+        shutil.which("chromium"),
+        DEFAULT_CHROMIUM_PATH,
+    )
+    for candidate in candidates:
+        if candidate is not None:
+            executable = shutil.which(candidate)
+            if executable is not None:
+                return executable
+    return None
 
 
 def _error_with_cause(code: str, message: str, status: int, cause: Exception) -> GatewayError:
@@ -189,7 +221,7 @@ class InteractiveService:
         browser: Browser | None = None
         sessions: OrderedDict[str, _Session] = OrderedDict()
         try:
-            executable = os.environ.get("MICROBROWSER_CHROMIUM_EXECUTABLE") or DEFAULT_CHROMIUM_PATH
+            executable = find_chromium_executable(playwright)
             browser = playwright.chromium.launch(
                 executable_path=executable,
                 headless=True,

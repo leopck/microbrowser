@@ -56,6 +56,7 @@ constexpr int kMaxContentRedirects = 5;
 constexpr std::size_t kStorageRecords = 64;
 constexpr std::size_t kMaxStorageKeyBytes = 128;
 constexpr std::size_t kMaxStorageStringBytes = 4096;
+constexpr std::size_t kMaxStorageBinaryBytes = 4096;
 constexpr std::size_t kStorageHeaderBytes = 6;
 constexpr std::size_t kMaxStorageRecordBytes = kStorageHeaderBytes + kMaxStorageKeyBytes + kMaxStorageStringBytes;
 constexpr uint8_t kStorageFormatVersion = 1;
@@ -89,6 +90,16 @@ void append_u16(std::vector<uint8_t>& output, uint16_t value) {
 
 void append_u32(std::vector<uint8_t>& output, uint32_t value) {
     for (unsigned shift = 0; shift < 32; shift += 8) output.push_back(uint8_t(value >> shift));
+}
+
+uint64_t read_u64(std::span<const uint8_t> bytes) {
+    uint64_t value = 0;
+    for (unsigned byte = 0; byte < 8; ++byte) value |= uint64_t(bytes[byte]) << (byte * 8U);
+    return value;
+}
+
+void append_u64(std::vector<uint8_t>& output, uint64_t value) {
+    for (unsigned shift = 0; shift < 64; shift += 8) output.push_back(uint8_t(value >> shift));
 }
 
 struct StoredValue {
@@ -451,6 +462,14 @@ struct EspIdfPlatform::State final {
                 decoded.value = Value::from_number(number);
             }
             break;
+        case Value::Type::integer:
+            if (value_length != sizeof(int64_t)) throw malformed("integer must contain eight bytes");
+            decoded.value = Value::from_integer(std::bit_cast<int64_t>(read_u64(encoded)));
+            break;
+        case Value::Type::bytes:
+            if (value_length > kMaxStorageBinaryBytes) throw malformed("binary value is too long");
+            decoded.value = Value::from_bytes(ByteBuffer(encoded.begin(), encoded.end()));
+            break;
         case Value::Type::boolean:
             if (value_length != 1 || encoded[0] > 1) throw malformed("invalid Boolean value");
             decoded.value = Value::from_bool(encoded[0] != 0);
@@ -478,10 +497,22 @@ struct EspIdfPlatform::State final {
         case Value::Type::boolean:
             encoded_size = 1;
             break;
+        case Value::Type::integer:
+            encoded_size = sizeof(int64_t);
+            break;
+        case Value::Type::bytes:
+            if (!value.bytes) throw ScriptError("cannot store a null byte buffer");
+            if (value.bytes->size() > kMaxStorageBinaryBytes) throw ScriptError("stored binary values are limited to 4096 bytes");
+            encoded_size = value.bytes->size();
+            break;
         case Value::Type::string:
             if (value.string.size() > kMaxStorageStringBytes) throw ScriptError("stored strings are limited to 4096 bytes");
             encoded_size = value.string.size();
             break;
+        case Value::Type::handle:
+            throw ScriptError("cannot store a device handle");
+        case Value::Type::void_value:
+            throw ScriptError("cannot store a void value");
         default:
             throw ScriptError("void values cannot be stored");
         }
@@ -495,6 +526,10 @@ struct EspIdfPlatform::State final {
         bytes.insert(bytes.end(), name.begin(), name.end());
         if (value.type == Value::Type::number) {
             append_u32(bytes, std::bit_cast<uint32_t>(value.number));
+        } else if (value.type == Value::Type::integer) {
+            append_u64(bytes, std::bit_cast<uint64_t>(value.integer));
+        } else if (value.type == Value::Type::bytes) {
+            bytes.insert(bytes.end(), value.bytes->begin(), value.bytes->end());
         } else if (value.type == Value::Type::boolean) {
             bytes.push_back(value.boolean ? 1 : 0);
         } else {

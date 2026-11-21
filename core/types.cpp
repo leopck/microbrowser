@@ -1,5 +1,7 @@
 #include "microbrowser/types.h"
 
+#include "microbrowser/vm.h"
+
 #include <algorithm>
 #include <limits>
 
@@ -56,6 +58,37 @@ Value Value::from_string(std::string value) {
     return result;
 }
 
+
+Value Value::from_integer(std::int64_t value) {
+    Value result;
+    result.type = Type::integer;
+    result.integer = value;
+    return result;
+}
+
+Value Value::from_bytes(ByteBuffer value) {
+    return from_bytes(std::make_shared<const ByteBuffer>(std::move(value)));
+}
+
+Value Value::from_bytes(ByteBufferPtr value) {
+    if (value == nullptr) throw ScriptError("byte buffers cannot be null");
+    Value result;
+    result.type = Type::bytes;
+    result.bytes = std::move(value);
+    return result;
+}
+
+Value Value::from_handle(DeviceHandle value) {
+    if (!value.is_empty() &&
+        (value.capability == Capability::none || value.slot == 0 ||
+         value.object_generation == 0 || value.owner_generation == 0)) {
+        throw ScriptError("device handle has invalid identity");
+    }
+    Value result;
+    result.type = Type::handle;
+    result.handle = value;
+    return result;
+}
 Value Value::from_void() {
     return Value{};
 }

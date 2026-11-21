@@ -1,6 +1,7 @@
 #pragma once
 
 #include "microbrowser/package.h"
+#include "microbrowser/peripherals.h"
 #include "microbrowser/platform.h"
 #include "microbrowser/types.h"
 #include "microbrowser/vm.h"
@@ -35,13 +36,17 @@ struct Damage {
 
 class Browser final : private VmHost {
 public:
-    Browser(Platform& platform, Size size, std::string gateway_url = "http://127.0.0.1:8765");
+    Browser(Platform& platform, Size size, std::string gateway_url = "http://127.0.0.1:8765",
+            PeripheralRegistry* peripherals = nullptr);
     ~Browser();
     void resize(Size size);
     void load(std::vector<uint8_t> bytes);
     void open_url(std::string url, bool remember = true);
     // Explicit consent to gateway-executed browser content; ordinary URLs use Reader.
     void open_interactive_url(std::string url);
+    // Confirm the currently displayed native-package URL, as its Reader action does.
+    // Throws ScriptError if that exact confirmation is not current.
+    void confirm_native_package();
     void navigate_back();
 
     // tick is called by the application loop. true means damage() must be presented.
@@ -88,6 +93,12 @@ private:
         bool active = false;
     };
 
+    struct DeviceCallback {
+        DeviceHandle operation;
+        DeviceHandle subscription;
+        std::uint32_t function;
+    };
+
     using Navigation = NavigationSignal;
     std::size_t m_cursor_byte = 0;
     int m_pointer_x = -1;
@@ -99,6 +110,13 @@ private:
     std::vector<Value> m_state;
     std::vector<uint16_t> m_pixels;
     std::unique_ptr<UrlState> m_url;
+    // Borrowed from the Platform. It must outlive the Browser's device sessions.
+    PeripheralRegistry* m_peripherals = nullptr;
+    std::unique_ptr<DeviceSession> m_devices;
+    std::vector<DeviceCallback> m_device_callbacks;
+    std::vector<DeviceCallback> m_device_subscriptions;
+    std::vector<std::string_view> m_device_permission_names;
+    const DeviceResult* m_active_device_result = nullptr;
     std::string m_storage_prefix;
     std::vector<Rect> m_pending_regions;
     Damage m_frame_damage{};
@@ -130,6 +148,7 @@ private:
     Value read_state(uint32_t index) const override;
     void write_state(uint32_t index, const Value& value) override;
     Value builtin(uint8_t id, std::span<const Value> arguments) override;
+    Value device_call(std::uint16_t operation, std::span<const Value> arguments) override;
 
     void invalidate(Rect area);
     void invalidate(const Node& node);
@@ -163,6 +182,11 @@ private:
     void receive_transfer(HttpResult&& result);
     void open_page_index(uint32_t page, bool remember);
     void invoke(uint32_t function);
+    void invoke(std::uint32_t function, std::span<const Value> arguments);
+    DeviceSession& prepare_devices();
+    void validate_required_devices();
+    void close_devices();
+    void process_devices();
     void handle_error(std::string_view message);
     Node* find_node(std::string_view id);
     uint32_t find_function(std::string_view name) const;

@@ -40,6 +40,11 @@ def source(
     ).encode("utf-8")
 
 
+
+def count_nodes(node: DecodedNode) -> int:
+    return 1 + sum(count_nodes(child) for child in node.children)
+
+
 def build(markup: bytes, path: Path | str = "test.mb") -> DecodedPackage:
     return decode_package(compile_source(markup, path))
 
@@ -312,7 +317,7 @@ class UiAndPackageTests(unittest.TestCase):
         self.assertGreaterEqual(len(decoded.pages), 3)
         self.assertGreaterEqual(len(decoded.assets), 1)
         self.assertGreater(len(decoded.functions), 8)
-        self.assertGreater(decoded.node_count, 40)
+        self.assertGreater(sum(count_nodes(page.root) for page in decoded.pages), 40)
         builtin_ids = {
             operands[0]
             for function in decoded.functions

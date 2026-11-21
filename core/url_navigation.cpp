@@ -235,6 +235,7 @@ std::string_view Browser::content_mode() const {
 
 void Browser::clear_url_view(bool forget_history) {
     cancel_pointer_gesture();
+    close_devices();
     m_focus = nullptr;
     m_show_keyboard = false;
     m_url->document.reset();
@@ -382,6 +383,13 @@ void Browser::open_url(std::string url, bool remember) {
 
 void Browser::open_interactive_url(std::string url) {
     open_reader_url(url, true, true);
+}
+
+void Browser::confirm_native_package() {
+    if (!m_url->document || m_url->document->kind != ReaderKind::native_package_confirmation) {
+        throw ScriptError("native application confirmation is not current");
+    }
+    open_reader_url(m_url->document->source_url, false, false, NativePackageIntent::confirmed);
 }
 
 void Browser::navigate_back() {

@@ -1,19 +1,38 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 import struct
 from dataclasses import dataclass
-from enum import Enum, IntEnum
+from enum import IntEnum
 from pathlib import Path
 
+from .device_api import (
+    Argument,
+    CAPABILITY_IDS,
+    CAPABILITY_NAMES,
+    DeviceOperation,
+    HardwareDeclaration,
+    IO_CALLS,
+    IoPrototype,
+    METADATA_FIELDS,
+    MAX_BYTES_PER_BUFFER,
+    NativeOperation,
+    ScriptValue,
+    ValueType,
+)
 from .errors import CompileError
 
 MAX_FUNCTIONS = 128
 MAX_LOCALS = 32
 MAX_CONSTANTS = 256
 MAX_CODE_BYTES = 65_535
+INT64_MIN = -(1 << 63)
+INT64_MAX = (1 << 63) - 1
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 NUMBER_RE = re.compile(r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+INTEGER_LITERAL_RE = re.compile(r"([0-9]+)i64(?![A-Za-z0-9_])")
+DECIMAL_I64_RE = re.compile(r"-?[0-9]+")
 RESERVED = {
     "fn",
     "let",
@@ -26,6 +45,7 @@ RESERVED = {
     "true",
     "false",
     "state",
+    "io",
 }
 
 
@@ -39,28 +59,11 @@ class SourcePoint:
         return CompileError(self.path, self.line, self.column, message)
 
 
-class ValueType(Enum):
-    UNKNOWN = 0
-    NUMBER = 1
-    BOOLEAN = 2
-    STRING = 3
-    VOID = 4
-
-    @property
-    def label(self) -> str:
-        return {
-            ValueType.UNKNOWN: "unknown",
-            ValueType.NUMBER: "number",
-            ValueType.BOOLEAN: "boolean",
-            ValueType.STRING: "string",
-            ValueType.VOID: "void",
-        }[self]
-
 
 @dataclass(frozen=True, slots=True)
 class Constant:
     type: ValueType
-    value: float | bool | str
+    value: ScriptValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,13 +139,14 @@ class Opcode(IntEnum):
     CALL = 22
     BUILTIN = 23
     RETURN = 24
+    DEVICE_CALL = 25
 
 
 @dataclass(frozen=True, slots=True)
 class Token:
     kind: str
     text: str
-    value: float | str | bool | None
+    value: float | str | bool | int | None
     point: SourcePoint
 
 
@@ -206,6 +210,15 @@ class Lexer:
         start = self.point()
         if char in "\"'":
             return Token("literal", "", self._string(char, start), start)
+        integer_match = INTEGER_LITERAL_RE.match(self.text, self.index)
+        if integer_match:
+            raw = integer_match.group(0)
+            magnitude = int(integer_match.group(1))
+            if magnitude > INT64_MAX + 1:
+                raise self.error("integer literal is outside the signed 64-bit range", start)
+            for _ in raw:
+                self.advance()
+            return Token("integer", raw, magnitude, start)
         match = NUMBER_RE.match(self.text, self.index)
         if match:
             raw = match.group(0)
@@ -303,6 +316,12 @@ class Number:
 
 
 @dataclass(slots=True)
+class Integer:
+    token: Token
+    value: int
+
+
+@dataclass(slots=True)
 class String:
     token: Token
     value: str
@@ -349,7 +368,7 @@ class Binary:
     right: Expression
 
 
-Expression = Number | String | Boolean | Variable | StateReference | Call | Unary | Binary
+Expression = Integer | Number | String | Boolean | Variable | StateReference | Call | Unary | Binary
 
 
 @dataclass(slots=True)
@@ -422,6 +441,7 @@ class FunctionDecl:
 @dataclass(slots=True)
 class Program:
     functions: list[FunctionDecl]
+    uses_device_calls: bool
 
 
 class Parser:
@@ -435,6 +455,7 @@ class Parser:
         self.parameters: list[str] = []
         self.loop_depth = 0
         self.returns_value = False
+        self.uses_device_calls = False
 
     @property
     def token(self) -> Token:
@@ -467,7 +488,7 @@ class Parser:
             self.functions.append(self.function())
             if len(self.functions) > MAX_FUNCTIONS:
                 raise self.token.point.error("script exceeds 128 functions")
-        return Program(self.functions)
+        return Program(self.functions, self.uses_device_calls)
 
     def function(self) -> FunctionDecl:
         self.expect("fn")
@@ -631,13 +652,34 @@ class Parser:
         return expression
 
     def unary(self) -> Expression:
+        if self.token.text == "-" and self.tokens[self.index + 1].kind == "integer":
+            self.advance()
+            token = self.advance()
+            return Integer(token, -int(token.value))
         if self.token.text in ("!", "-"):
             token = self.advance()
             return Unary(token, token.text, self.unary())
         return self.primary()
 
+    def complete_call(self, token: Token, name: str) -> Call:
+        self.expect("(")
+        arguments: list[Expression] = []
+        if self.token.text != ")":
+            while True:
+                arguments.append(self.expression())
+                if not self.match(","):
+                    break
+        self.expect(")")
+        return Call(token, name, arguments)
+
     def primary(self) -> Expression:
         token = self.token
+        if token.kind == "integer":
+            self.advance()
+            value = int(token.value)
+            if value > INT64_MAX:
+                raise token.point.error("integer literal is outside the signed 64-bit range")
+            return Integer(token, value)
         if token.kind == "literal":
             self.advance()
             if isinstance(token.value, float):
@@ -655,16 +697,18 @@ class Parser:
             self.expect(".")
             field = self.name("state field name")
             return StateReference(state_token, field.text)
+        if self.match("io"):
+            io_token = self.tokens[self.index - 1]
+            self.expect(".")
+            operation = self.name("io operation name")
+            full_name = f"io.{operation.text}"
+            if full_name not in IO_CALLS:
+                raise operation.point.error(f"unknown io operation {operation.text!r}")
+            self.uses_device_calls = True
+            return self.complete_call(io_token, full_name)
         name = self.name("expression")
-        if self.match("("):
-            arguments: list[Expression] = []
-            if self.token.text != ")":
-                while True:
-                    arguments.append(self.expression())
-                    if not self.match(","):
-                        break
-            self.expect(")")
-            return Call(name, name.text, arguments)
+        if self.token.text == "(":
+            return self.complete_call(name, name.text)
         if name.text not in self.locals:
             raise name.point.error(f"undefined local variable {name.text!r}")
         return Variable(name, name.text, self.locals[name.text])
@@ -686,11 +730,13 @@ class _TypeChecker:
         states: dict[str, ValueType],
         functions: dict[str, FunctionInfo],
         changed: list[bool],
+        hardware: HardwareDeclaration | None,
     ) -> None:
         self.info = info
         self.states = states
         self.functions = functions
         self.changed = changed
+        self.hardware = hardware
 
     def check(self) -> None:
         self.statement(self.info.declaration.body)
@@ -714,17 +760,28 @@ class _TypeChecker:
         self.changed[0] = True
 
     def expect(self, expression: Expression, expected: ValueType) -> ValueType:
-        actual = self.expression(expression)
-        if actual == ValueType.VOID and expected != ValueType.VOID:
-            raise expression.token.point.error(f"expected {expected.label}, found void expression")
         if expected == ValueType.UNKNOWN:
-            return actual
-        if actual == ValueType.UNKNOWN and isinstance(expression, Variable):
-            self.refine(self.info.types, expression.slot, expected, expression.token)
-            return expected
-        if actual not in (ValueType.UNKNOWN, expected):
-            raise expression.token.point.error(f"expected {expected.label}, found {actual.label}")
-        return expected if actual == ValueType.UNKNOWN else actual
+            return self.expression(expression)
+        return self.expect_types(expression, (expected,))
+
+    def expect_types(
+        self, expression: Expression, expected: tuple[ValueType, ...]
+    ) -> ValueType:
+        actual = self.expression(expression)
+        if actual == ValueType.VOID and ValueType.VOID not in expected:
+            raise expression.token.point.error(
+                f"expected {_type_list(expected)}, found void expression"
+            )
+        if actual == ValueType.UNKNOWN and isinstance(expression, Variable) and len(expected) == 1:
+            self.refine(self.info.types, expression.slot, expected[0], expression.token)
+            return expected[0]
+        if actual not in expected and actual != ValueType.UNKNOWN:
+            raise expression.token.point.error(
+                f"expected {_type_list(expected)}, found {actual.label}"
+            )
+        if actual == ValueType.UNKNOWN and len(expected) == 1:
+            return expected[0]
+        return actual
 
     def statement(self, statement: Statement) -> None:
         if isinstance(statement, Block):
@@ -783,6 +840,8 @@ class _TypeChecker:
         raise AssertionError(f"unknown statement {type(statement).__name__}")
 
     def expression(self, expression: Expression) -> ValueType:
+        if isinstance(expression, Integer):
+            return ValueType.INTEGER
         if isinstance(expression, Number):
             return ValueType.NUMBER
         if isinstance(expression, String):
@@ -799,14 +858,25 @@ class _TypeChecker:
         if isinstance(expression, Call):
             return self.call(expression)
         if isinstance(expression, Unary):
-            expected = ValueType.BOOLEAN if expression.operator == "!" else ValueType.NUMBER
-            self.expect(expression.operand, expected)
-            return expected
+            if expression.operator == "!":
+                self.expect(expression.operand, ValueType.BOOLEAN)
+                return ValueType.BOOLEAN
+            actual = self.expression(expression.operand)
+            if actual == ValueType.UNKNOWN:
+                return actual
+            if actual not in (ValueType.INTEGER, ValueType.NUMBER):
+                raise expression.token.point.error(
+                    f"operator - requires f32 or i64, found {actual.label}"
+                )
+            return actual
         if isinstance(expression, Binary):
             return self.binary(expression)
         raise AssertionError(f"unknown expression {type(expression).__name__}")
 
     def call(self, call: Call) -> ValueType:
+        io_call = IO_CALLS.get(call.name)
+        if io_call is not None:
+            return self.device_call(call)
         builtin = BUILTINS.get(call.name)
         if builtin is not None:
             self.arity(call, len(builtin.arguments))
@@ -832,20 +902,204 @@ class _TypeChecker:
                 f"found {len(call.arguments)}"
             )
 
+    def device_call(self, call: Call) -> ValueType:
+        specification = IO_CALLS[call.name]
+        count = len(call.arguments)
+        matching = specification.matching_prototypes(count)
+        if not matching:
+            if len(specification.prototypes) == 1:
+                self.arity(call, len(specification.prototypes[0].arguments))
+            raise call.token.point.error(f"{call.name} has no prototype for {count} arguments")
+        actual = [self.expression(argument) for argument in call.arguments]
+        viable = [
+            prototype
+            for prototype in matching
+            if all(
+                value == ValueType.UNKNOWN or value in argument.types
+                for value, argument in zip(actual, prototype.arguments, strict=True)
+            )
+        ]
+        if not viable:
+            self.device_type_error(call, matching, actual)
+        for index, (argument, value) in enumerate(zip(call.arguments, actual, strict=True)):
+            expected = _unique_types(
+                candidate_type
+                for prototype in viable
+                for candidate_type in prototype.arguments[index].types
+            )
+            if value == ValueType.UNKNOWN and isinstance(argument, Variable) and len(expected) == 1:
+                self.refine(self.info.types, argument.slot, expected[0], argument.token)
+            self.check_argument_domain(argument, [prototype.arguments[index] for prototype in viable])
+        self.check_callbacks(call, viable)
+        self.check_hardware_constraint(call)
+        result = self.check_device_literals(call)
+        return specification.result if result is None else result
+
+    def device_type_error(
+        self, call: Call, matching: list[IoPrototype], actual: list[ValueType]
+    ) -> None:
+        for index, value in enumerate(actual):
+            if value == ValueType.UNKNOWN:
+                continue
+            expected = _unique_types(
+                candidate_type
+                for prototype in matching
+                for candidate_type in prototype.arguments[index].types
+            )
+            if value not in expected:
+                raise call.arguments[index].token.point.error(
+                    f"{call.name} expects {_type_list(expected)} for argument {index + 1}, "
+                    f"found {value.label}"
+                )
+        raise call.token.point.error(f"{call.name} arguments do not match one capability prototype")
+
+    def check_argument_domain(self, expression: Expression, arguments: list[Argument]) -> None:
+        literal = _literal_integer(expression)
+        if literal is None:
+            return
+        if any(
+            (argument.choices is None or literal in argument.choices)
+            and (argument.minimum is None or literal >= argument.minimum)
+            and (argument.maximum is None or literal <= argument.maximum)
+            for argument in arguments
+        ):
+            return
+        argument = arguments[0]
+        if argument.choices is not None:
+            expected = ", ".join(str(choice) for choice in argument.choices)
+            raise expression.token.point.error(f"argument must be one of {expected}, found {literal}")
+        raise expression.token.point.error(
+            f"argument {literal} is outside {argument.minimum}..{argument.maximum}"
+        )
+
+    def check_callbacks(self, call: Call, viable: list[IoPrototype]) -> None:
+        if not any(prototype.callback_results for prototype in viable):
+            return
+        if any(prototype.notification_results for prototype in viable):
+            self.check_callback(
+                call.arguments[-2],
+                _callback_types(prototype.callback_results for prototype in viable),
+            )
+            self.check_callback(
+                call.arguments[-1],
+                _callback_types(prototype.notification_results for prototype in viable),
+            )
+            return
+        self.check_callback(
+            call.arguments[-1],
+            _callback_types(prototype.callback_results for prototype in viable),
+        )
+
+    def check_callback(self, expression: Expression, result_types: tuple[ValueType, ...]) -> None:
+        if not isinstance(expression, String):
+            return
+        target = self.functions.get(expression.value)
+        if target is None:
+            raise expression.token.point.error(f"unknown callback function {expression.value!r}")
+        if len(target.declaration.parameters) != 3:
+            raise expression.token.point.error(
+                f"callback {expression.value!r} expects 3 arguments, "
+                f"found {len(target.declaration.parameters)}"
+            )
+        self.refine(target.types, 0, ValueType.HANDLE, expression.token)
+        self.refine(target.types, 1, ValueType.INTEGER, expression.token)
+        current = target.types[2]
+        if current != ValueType.UNKNOWN and current not in result_types:
+            raise expression.token.point.error(
+                f"callback {expression.value!r} cannot receive primary result type {current.label}"
+            )
+        if len(result_types) == 1:
+            self.refine(target.types, 2, result_types[0], expression.token)
+
+    def check_hardware_constraint(self, call: Call) -> None:
+        operation = IO_CALLS[call.name].operation
+        if operation not in (DeviceOperation.OPEN, NativeOperation.CAPABILITY_SUPPORTED):
+            return
+        capability = _literal_integer(call.arguments[0])
+        if capability is not None:
+            if capability not in CAPABILITY_IDS:
+                raise call.arguments[0].token.point.error(
+                    f"unrecognized capability ID {capability}"
+                )
+            declaration = next(
+                (
+                    item
+                    for item in (self.hardware.capabilities if self.hardware else ())
+                    if item.capability_id == capability
+                ),
+                None,
+            )
+            if declaration is None:
+                name = CAPABILITY_NAMES[capability]
+                raise call.arguments[0].token.point.error(
+                    f"hardware capability {name!r} is not declared"
+                )
+            if operation == DeviceOperation.OPEN:
+                minimum_minor = _literal_integer(call.arguments[2])
+                if minimum_minor is not None and declaration.minor < minimum_minor:
+                    raise call.arguments[2].token.point.error(
+                        f"declared {declaration.source_name} minor {declaration.minor} "
+                        f"is below requested minimum {minimum_minor}"
+                    )
+        endpoint = call.arguments[1]
+        if isinstance(endpoint, String):
+            allowed = self.hardware.permission_endpoints if self.hardware else ()
+            if endpoint.value not in allowed:
+                raise endpoint.token.point.error(
+                    f"hardware endpoint {endpoint.value!r} is not declared"
+                )
+
+    def check_device_literals(self, call: Call) -> ValueType | None:
+        operation = IO_CALLS[call.name].operation
+        if operation == NativeOperation.METADATA:
+            field_id = _literal_integer(call.arguments[1])
+            if field_id is None:
+                return None
+            field = METADATA_FIELDS.get(field_id)
+            if field is None:
+                raise call.arguments[1].token.point.error(f"unknown metadata field ID {field_id}")
+            if field.indexed != (len(call.arguments) == 3):
+                expectation = "requires" if field.indexed else "rejects"
+                raise call.token.point.error(f"metadata field {field.name} {expectation} an entry index")
+            return field.result
+        if operation == NativeOperation.BYTES and len(call.arguments) == 1:
+            argument = call.arguments[0]
+            if isinstance(argument, String):
+                try:
+                    parse_hex_bytes(argument.value)
+                except ValueError as error:
+                    raise argument.token.point.error(str(error)) from error
+        if operation == NativeOperation.INTEGER:
+            argument = call.arguments[0]
+            try:
+                if isinstance(argument, String):
+                    parse_decimal_i64(argument.value)
+                elif isinstance(argument, Number):
+                    parse_decimal_i64(str(int(_binary32(argument.value))))
+                    value = _binary32(argument.value)
+                    if not value.is_integer() or not INT64_MIN <= value <= INT64_MAX:
+                        raise ValueError("f32 value is not an exact signed 64-bit integer")
+            except ValueError as error:
+                raise argument.token.point.error(str(error)) from error
+        if operation == NativeOperation.NUMBER and isinstance(call.arguments[0], Integer):
+            argument = call.arguments[0]
+            value = argument.value
+            try:
+                converted = _binary32(float(value))
+            except (OverflowError, ValueError) as error:
+                raise argument.token.point.error("i64 cannot be represented exactly as f32") from error
+            if not _finite_f32(converted) or int(converted) != value:
+                raise argument.token.point.error(
+                    f"i64 value {value} cannot be represented exactly as f32"
+                )
+        return None
+
     def binary(self, binary: Binary) -> ValueType:
         operator = binary.operator
         if operator in ("&&", "||"):
             self.expect(binary.left, ValueType.BOOLEAN)
             self.expect(binary.right, ValueType.BOOLEAN)
             return ValueType.BOOLEAN
-        if operator in ("<", "<=", ">", ">="):
-            self.expect(binary.left, ValueType.NUMBER)
-            self.expect(binary.right, ValueType.NUMBER)
-            return ValueType.BOOLEAN
-        if operator in ("-", "*", "/"):
-            self.expect(binary.left, ValueType.NUMBER)
-            self.expect(binary.right, ValueType.NUMBER)
-            return ValueType.NUMBER
         left = self.expression(binary.left)
         right = self.expression(binary.right)
         if ValueType.VOID in (left, right):
@@ -860,13 +1114,70 @@ class _TypeChecker:
         elif right != ValueType.UNKNOWN and left == ValueType.UNKNOWN:
             self.expect(binary.left, right)
             left = right
+        result = left if left != ValueType.UNKNOWN else right
         if operator == "+":
-            if left == ValueType.BOOLEAN or right == ValueType.BOOLEAN:
-                raise binary.token.point.error("operator + requires two numbers or two strings")
-            return left if left != ValueType.UNKNOWN else right
+            if result not in (ValueType.UNKNOWN, ValueType.INTEGER, ValueType.NUMBER, ValueType.STRING):
+                raise binary.token.point.error("operator + requires two numbers, two integers, or two strings")
+            return result
         if operator in ("==", "!="):
             return ValueType.BOOLEAN
+        if result not in (ValueType.UNKNOWN, ValueType.INTEGER, ValueType.NUMBER):
+            raise binary.token.point.error(
+                f"operator {operator} requires two matching numeric types"
+            )
+        if operator in ("<", "<=", ">", ">="):
+            return ValueType.BOOLEAN
+        if operator in ("-", "*", "/"):
+            return result
         raise AssertionError(f"unknown binary operator {operator}")
+
+def _type_list(types: tuple[ValueType, ...]) -> str:
+    return " or ".join(value.label for value in types)
+
+
+def _unique_types(values: Iterable[ValueType]) -> tuple[ValueType, ...]:
+    result: list[ValueType] = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return tuple(result)
+
+
+def _callback_types(groups: Iterable[tuple[ValueType, ...]]) -> tuple[ValueType, ...]:
+    # Failed operations and data-less results carry void rather than a fake zero.
+    return _unique_types(
+        value
+        for group in groups
+        for value in (*group, ValueType.VOID)
+    )
+
+
+def _literal_integer(expression: Expression) -> int | None:
+    return expression.value if isinstance(expression, Integer) else None
+
+
+def _binary32(value: float) -> float:
+    return struct.unpack("<f", struct.pack("<f", value))[0]
+
+
+def parse_decimal_i64(text: str) -> int:
+    if not DECIMAL_I64_RE.fullmatch(text):
+        raise ValueError("expected a strict signed-decimal i64 string")
+    value = int(text)
+    if not INT64_MIN <= value <= INT64_MAX:
+        raise ValueError("signed 64-bit integer is out of range")
+    return value
+
+
+def parse_hex_bytes(text: str) -> bytes:
+    if len(text) % 2:
+        raise ValueError("bytes hex string must have exact even length")
+    if not re.fullmatch(r"[0-9A-Fa-f]*", text):
+        raise ValueError("bytes hex string must contain only ASCII hexadecimal digits")
+    result = bytes.fromhex(text)
+    if len(result) > MAX_BYTES_PER_BUFFER:
+        raise ValueError(f"bytes value exceeds {MAX_BYTES_PER_BUFFER} bytes")
+    return result
 
 
 def _has_void_return(statement: Statement) -> bool:
@@ -904,7 +1215,11 @@ def _finite_f32(value: float) -> bool:
     return converted == converted and abs(converted) != float("inf")
 
 
-def check_types(program: Program, states: dict[str, ValueType]) -> dict[str, FunctionInfo]:
+def check_types(
+    program: Program,
+    states: dict[str, ValueType],
+    hardware: HardwareDeclaration | None = None,
+) -> dict[str, FunctionInfo]:
     infos = {
         function.name: FunctionInfo(
             declaration=function,
@@ -918,7 +1233,7 @@ def check_types(program: Program, states: dict[str, ValueType]) -> dict[str, Fun
     while changed[0]:
         changed[0] = False
         for function in program.functions:
-            _TypeChecker(infos[function.name], states, infos, changed).check()
+            _TypeChecker(infos[function.name], states, infos, changed, hardware).check()
         remaining -= 1
         if changed[0] and remaining < 0:
             raise AssertionError("script type checking did not converge")
@@ -948,7 +1263,7 @@ class _CodeGenerator:
         self.states = states
         self.code = bytearray()
         self.constants: list[Constant] = []
-        self.constant_indices: dict[tuple[ValueType, float | bool | str], int] = {}
+        self.constant_indices: dict[tuple[ValueType, ScriptValue], int] = {}
         self.loops: list[tuple[int, list[int], Token]] = []
 
     def generate(self) -> EncodedFunction:
@@ -993,6 +1308,16 @@ class _CodeGenerator:
         self.constants.append(constant)
         self.constant_indices[key] = index
         return index
+
+    def push_constant(self, value_type: ValueType, value: ScriptValue, token: Token) -> None:
+        index = self.constant(Constant(value_type, value), token)
+        self.emit(Opcode.PUSH_CONST, token, struct.pack("<H", index))
+
+    def device_call(self, expression: Call, operation: int) -> None:
+        for argument in expression.arguments:
+            self.expression(argument)
+        immediate = struct.pack("<HB", operation, len(expression.arguments))
+        self.emit(Opcode.DEVICE_CALL, expression.token, immediate)
 
     def statement(self, statement: Statement) -> None:
         if isinstance(statement, Block):
@@ -1058,13 +1383,14 @@ class _CodeGenerator:
         raise AssertionError(f"unknown statement {type(statement).__name__}")
 
     def expression(self, expression: Expression) -> None:
+        if isinstance(expression, Integer):
+            self.push_constant(ValueType.INTEGER, expression.value, expression.token)
+            return
         if isinstance(expression, Number):
-            index = self.constant(Constant(ValueType.NUMBER, expression.value), expression.token)
-            self.emit(Opcode.PUSH_CONST, expression.token, struct.pack("<H", index))
+            self.push_constant(ValueType.NUMBER, expression.value, expression.token)
             return
         if isinstance(expression, String):
-            index = self.constant(Constant(ValueType.STRING, expression.value), expression.token)
-            self.emit(Opcode.PUSH_CONST, expression.token, struct.pack("<H", index))
+            self.push_constant(ValueType.STRING, expression.value, expression.token)
             return
         if isinstance(expression, Boolean):
             self.emit(Opcode.PUSH_BOOL, expression.token, bytes([int(expression.value)]))
@@ -1077,6 +1403,10 @@ class _CodeGenerator:
             self.emit(Opcode.LOAD_STATE, expression.token, struct.pack("<H", index))
             return
         if isinstance(expression, Call):
+            io_call = IO_CALLS.get(expression.name)
+            if io_call is not None:
+                self.device_call(expression, io_call.operation)
+                return
             for argument in expression.arguments:
                 self.expression(argument)
             if expression.name in BUILTINS:
@@ -1138,6 +1468,7 @@ class _CodeGenerator:
 class ScriptOutput:
     functions: list[EncodedFunction]
     types: dict[str, ValueType]
+    uses_device_calls: bool
 
 
 def compile_script(
@@ -1146,14 +1477,19 @@ def compile_script(
     line: int,
     column: int,
     states: dict[str, tuple[int, ValueType]],
+    hardware: HardwareDeclaration | None = None,
 ) -> ScriptOutput:
     tokens = Lexer(text, path, line, column).tokens()
     program = Parser(tokens).parse()
     state_types = {name: value[1] for name, value in states.items()}
-    infos = check_types(program, state_types)
+    infos = check_types(program, state_types, hardware)
     indices = {function.name: index for index, function in enumerate(program.functions)}
     encoded = [
         _CodeGenerator(infos[function.name], infos, indices, states).generate()
         for function in program.functions
     ]
-    return ScriptOutput(encoded, {name: info.return_type for name, info in infos.items()})
+    return ScriptOutput(
+        encoded,
+        {name: info.return_type for name, info in infos.items()},
+        program.uses_device_calls,
+    )

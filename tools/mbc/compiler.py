@@ -9,10 +9,35 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Imported for package self-validation; keep this module usable independently of cli.py.
+from .device_api import (
+    CAPABILITIES_BY_NAME,
+    CapabilityDeclaration,
+    EMPTY_HANDLE,
+    ENDPOINT_RE,
+    HardwareDeclaration,
+    MAX_ENDPOINT_BYTES,
+    MAX_ENDPOINTS,
+    ScriptValue,
+)
 from .errors import CompileError, PngError
-from .package import FONT_SIZES, FONT_WEIGHTS, MAX_PACKAGE_BYTES, VERSION_MAJOR, VERSION_MINOR, decode_package
+from .package import (
+    FONT_SIZES,
+    FONT_WEIGHTS,
+    HARDWARE_VERSION_MAJOR,
+    MAX_PACKAGE_BYTES,
+    VERSION_MAJOR,
+    VERSION_MINOR,
+    decode_package,
+)
 from .png import rgb565_asset
-from .script import Constant, EncodedFunction, ValueType, compile_script
+from .script import (
+    Constant,
+    EncodedFunction,
+    ValueType,
+    compile_script,
+    parse_decimal_i64,
+    parse_hex_bytes,
+)
 from .xml_source import XmlElement, parse_xml_bytes, parse_xml_file
 
 
@@ -105,7 +130,7 @@ INTEGER_PROPERTY_BOUNDS = {
 class StateDef:
     name: str
     type: ValueType
-    value: float | bool | str
+    value: ScriptValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +149,7 @@ class Document:
     assets: list[AssetDef]
     pages: list[XmlElement]
     script: XmlElement | None
+    hardware: HardwareDeclaration | None
     path: str
 
 
@@ -252,6 +278,22 @@ def _state_fields(element: XmlElement | None) -> list[StateDef]:
         raw_value = field.attributes["value"]
         if value_type == "f32":
             states.append(StateDef(name, ValueType.NUMBER, _number(raw_value, field, "state value")))
+        elif value_type == "i64":
+            try:
+                value = parse_decimal_i64(raw_value)
+            except ValueError as error:
+                raise field.error(f"invalid i64 state value: {error}") from error
+            states.append(StateDef(name, ValueType.INTEGER, value))
+        elif value_type == "bytes":
+            try:
+                value = parse_hex_bytes(raw_value)
+            except ValueError as error:
+                raise field.error(f"invalid bytes state value: {error}") from error
+            states.append(StateDef(name, ValueType.BYTES, value))
+        elif value_type == "handle":
+            if raw_value:
+                raise field.error("handle state value must be empty")
+            states.append(StateDef(name, ValueType.HANDLE, EMPTY_HANDLE))
         elif value_type == "bool":
             if raw_value not in ("true", "false"):
                 raise field.error("boolean state value must be true or false")
@@ -259,8 +301,71 @@ def _state_fields(element: XmlElement | None) -> list[StateDef]:
         elif value_type == "string":
             states.append(StateDef(name, ValueType.STRING, raw_value))
         else:
-            raise field.error(f"unknown state type {value_type!r}; expected f32, bool, or string")
+            raise field.error(
+                f"unknown state type {value_type!r}; expected f32, i64, bytes, handle, bool, or string"
+            )
     return states
+
+
+def _hardware(element: XmlElement | None) -> HardwareDeclaration | None:
+    if element is None:
+        return None
+    _allowed_attributes(element, set())
+    if element.text.strip():
+        raise element.error("<hardware> contains unexpected character data")
+    capabilities: list[CapabilityDeclaration] = []
+    capability_ids: set[int] = set()
+    endpoints: list[str] = []
+    endpoint_names: set[str] = set()
+    for child in element.children:
+        if child.tail.strip():
+            raise child.error("unexpected character data after hardware declaration")
+        _no_nested_text(child)
+        if child.name in ("require", "optional"):
+            _allowed_attributes(child, {"capability", "version"})
+            missing = {"capability", "version"} - child.attributes.keys()
+            if missing:
+                raise child.error(f"<{child.name}> is missing {sorted(missing)[0]!r}")
+            family = child.attributes["capability"]
+            if re.fullmatch(r"-[0-9]+", family):
+                raise child.error("capability ID must not be negative")
+            capability_id = CAPABILITIES_BY_NAME.get(family)
+            if capability_id is None:
+                raise child.error(f"unrecognized capability family {family!r}")
+            if capability_id in capability_ids:
+                raise child.error(f"duplicate or conflicting hardware capability {family!r}")
+            match = re.fullmatch(r"([0-9]+)\.([0-9]+)", child.attributes["version"])
+            if not match:
+                raise child.error("capability version must be MAJOR.MINOR with unsigned integers")
+            major, minor = (int(part) for part in match.groups())
+            if major != 1 or minor > 0xFFFF:
+                raise child.error("capability version must be major 1 with minor 0 through 65535")
+            capability_ids.add(capability_id)
+            capabilities.append(
+                CapabilityDeclaration(
+                    capability_id, family, major, minor, child.name == "require"
+                )
+            )
+        elif child.name == "permission":
+            _allowed_attributes(child, {"endpoint"})
+            if "endpoint" not in child.attributes:
+                raise child.error("<permission> is missing 'endpoint'")
+            endpoint = child.attributes["endpoint"]
+            if not 1 <= len(endpoint) <= MAX_ENDPOINT_BYTES or not ENDPOINT_RE.fullmatch(endpoint):
+                raise child.error(
+                    "permission endpoint must match [A-Za-z0-9_.-]+ and be 1 through 64 ASCII bytes"
+                )
+            if endpoint in endpoint_names:
+                raise child.error(f"duplicate permission endpoint {endpoint!r}")
+            if len(endpoints) >= MAX_ENDPOINTS:
+                raise child.error("hardware manifest exceeds 65,535 permission endpoints")
+            endpoint_names.add(endpoint)
+            endpoints.append(endpoint)
+        else:
+            raise child.error(f"unknown <hardware> child <{child.name}>")
+    capabilities.sort(key=lambda declaration: (declaration.capability_id, not declaration.required))
+    endpoints.sort()
+    return HardwareDeclaration(tuple(capabilities), tuple(endpoints))
 
 
 def _asset(element: XmlElement) -> AssetDef:
@@ -296,6 +401,7 @@ def _document(root: XmlElement) -> Document:
     state_element: XmlElement | None = None
     style_element: XmlElement | None = None
     script_element: XmlElement | None = None
+    hardware_element: XmlElement | None = None
     assets: list[AssetDef] = []
     pages: list[XmlElement] = []
     singles: dict[str, XmlElement] = {}
@@ -304,7 +410,7 @@ def _document(root: XmlElement) -> Document:
     for element in root.children:
         if element.tail.strip():
             raise element.error(f"unexpected character data after <{element.name}>")
-        if element.name in ("state", "style", "script"):
+        if element.name in ("state", "style", "script", "hardware"):
             if element.name in singles:
                 raise element.error(f"duplicate <{element.name}> element")
             singles[element.name] = element
@@ -313,9 +419,11 @@ def _document(root: XmlElement) -> Document:
             elif element.name == "style":
                 _no_child_elements(element)
                 style_element = element
-            else:
+            elif element.name == "script":
                 _no_child_elements(element)
                 script_element = element
+            else:
+                hardware_element = element
         elif element.name == "asset":
             if pages:
                 raise element.error("assets must precede all pages")
@@ -345,7 +453,8 @@ def _document(root: XmlElement) -> Document:
         raise root.error("application must contain at least one page")
     states = _state_fields(state_element)
     return Document(
-        root.attributes["name"], states, style_element, assets, pages, script_element, root.path
+        root.attributes["name"], states, style_element, assets, pages, script_element,
+        _hardware(hardware_element), root.path
     )
 
 
@@ -505,6 +614,9 @@ def _validate_format(raw: str, bound_type: ValueType, element: XmlElement) -> No
     if conversion == "%s":
         if bound_type != ValueType.STRING:
             raise element.error("%s format requires a string state binding")
+    elif bound_type == ValueType.INTEGER:
+        if conversion != "%d":
+            raise element.error("integer state binding requires %d format")
     elif bound_type != ValueType.NUMBER:
         raise element.error(f"{conversion} format requires a numeric state binding")
 
@@ -745,6 +857,16 @@ def _pack_constant(constant: Constant, strings: _StringTable) -> bytes:
         return b"\x01" + bytes([int(bool(constant.value))])
     if constant.type == ValueType.STRING:
         return b"\x02" + struct.pack("<I", strings.intern(str(constant.value)))
+    if constant.type == ValueType.INTEGER:
+        return b"\x03" + struct.pack("<q", int(constant.value))
+    if constant.type == ValueType.BYTES:
+        value = constant.value
+        if not isinstance(value, bytes):
+            raise ValueError("bytes constant does not contain bytes")
+        return b"\x04" + struct.pack("<I", len(value)) + value
+    if constant.type == ValueType.HANDLE:
+        # MBPK can contain only an empty handle. Runtime handles are unforgeable.
+        return b"\x05\x00\x00"
     raise ValueError("void cannot be a bytecode constant")
 
 
@@ -764,6 +886,30 @@ def _state_section(states: list[StateDef], strings: _StringTable) -> bytes:
     for state in states:
         result.extend(struct.pack("<I", strings.intern(state.name)))
         result.extend(_pack_constant(Constant(state.type, state.value), strings))
+    return bytes(result)
+
+
+def _capabilities_section(hardware: HardwareDeclaration) -> bytes:
+    result = bytearray(struct.pack("<H", len(hardware.capabilities)))
+    for declaration in hardware.capabilities:
+        result.extend(
+            struct.pack(
+                "<HHHH",
+                declaration.capability_id,
+                declaration.major,
+                declaration.minor,
+                int(declaration.required),
+            )
+        )
+    return bytes(result)
+
+
+def _permissions_section(hardware: HardwareDeclaration) -> bytes:
+    result = bytearray(struct.pack("<H", len(hardware.permission_endpoints)))
+    for endpoint in hardware.permission_endpoints:
+        encoded = endpoint.encode("ascii")
+        result.extend(struct.pack("<H", len(encoded)))
+        result.extend(encoded)
     return bytes(result)
 
 
@@ -801,7 +947,9 @@ def _data_section(asset: EncodedAsset, strings: _StringTable) -> bytes:
     )
 
 
-def _envelope(sections: list[tuple[bytes, bytes]]) -> bytes:
+def _envelope(
+    sections: list[tuple[bytes, bytes]], major: int = VERSION_MAJOR
+) -> bytes:
     body = bytearray()
     for name, payload in sections:
         body.extend(name)
@@ -810,7 +958,7 @@ def _envelope(sections: list[tuple[bytes, bytes]]) -> bytes:
     total_size = 20 + len(body)
     if total_size > MAX_PACKAGE_BYTES:
         raise CompileError("package", 1, 1, f"package size {total_size} exceeds 16 MiB")
-    header = struct.pack("<4sHHIII", b"MBPK", VERSION_MAJOR, VERSION_MINOR, total_size, len(sections), 0)
+    header = struct.pack("<4sHHIII", b"MBPK", major, VERSION_MINOR, total_size, len(sections), 0)
     without_crc = header + bytes(body)
     crc = zlib.crc32(without_crc) & 0xFFFFFFFF
     return without_crc[:16] + struct.pack("<I", crc) + without_crc[20:]
@@ -820,16 +968,20 @@ def build_package(root: XmlElement) -> bytes:
     document = _document(root)
     states = document.states
     state_indices = {state.name: (index, state.type) for index, state in enumerate(states)}
+    uses_device_calls = False
     if document.script is None:
         functions: list[EncodedFunction] = []
     else:
-        functions = compile_script(
+        script = compile_script(
             document.script.text,
             document.path,
             document.script.text_line,
             document.script.text_column,
             state_indices,
-        ).functions
+            document.hardware,
+        )
+        functions = script.functions
+        uses_device_calls = script.uses_device_calls
     strings = _StringTable()
     state_payload = _state_section(states, strings)
     code_payload = _code_section(functions, strings)
@@ -857,15 +1009,33 @@ def build_package(root: XmlElement) -> bytes:
         except PngError as error:
             raise asset.element.error(f"asset {asset.source!r}: {error}") from error
         assets.append(EncodedAsset(asset.name, image.width, image.height, image.pixels))
+    hardware_value_types = {ValueType.INTEGER, ValueType.BYTES, ValueType.HANDLE}
+    uses_hardware_values = any(state.type in hardware_value_types for state in states) or any(
+        constant.type in hardware_value_types
+        for function in functions
+        for constant in function.constants
+    )
+    major = (
+        HARDWARE_VERSION_MAJOR
+        if document.hardware is not None or uses_device_calls or uses_hardware_values
+        else VERSION_MAJOR
+    )
+    hardware_sections: list[tuple[bytes, bytes]] = []
+    if document.hardware is not None:
+        hardware_sections = [
+            (b"CAPS", _capabilities_section(document.hardware)),
+            (b"PERM", _permissions_section(document.hardware)),
+        ]
     sections = [
         (b"STRS", b""),
+        *hardware_sections,
         (b"STAT", state_payload),
         (b"CODE", code_payload),
         *[(b"PAGE", payload) for payload in page_payloads],
         *[(b"DATA", _data_section(asset, strings)) for asset in assets],
     ]
     sections[0] = (b"STRS", strings.encode())
-    package = _envelope(sections)
+    package = _envelope(sections, major)
     decode_package(package)
     return package
 

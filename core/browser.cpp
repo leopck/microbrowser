@@ -81,10 +81,11 @@ std::pair<uint64_t, std::string_view> animation_timing(std::string_view specific
 
 } // namespace
 
-Browser::Browser(Platform& platform, Size size, std::string gateway_url)
+Browser::Browser(Platform& platform, Size size, std::string gateway_url, PeripheralRegistry* peripherals)
     : m_platform(platform), m_size(validated_size(size)),
       m_pixels(std::size_t(size.width) * std::size_t(size.height), to_rgb565(palette::background)),
       m_url(std::make_unique<UrlState>(validated_gateway_origin(gateway_url))) {
+    m_peripherals = peripherals;
     m_pending_regions.reserve(32);
 }
 
@@ -126,6 +127,7 @@ void Browser::apply_package(const std::vector<uint8_t>& bytes) {
     initial_state.reserve(package.states.size());
     for (const StateField& field : package.states) initial_state.push_back(field.initial);
     cancel_pointer_gesture();
+    close_devices();
     m_package = std::move(package);
     m_state = std::move(initial_state);
     m_page = nullptr;
@@ -141,6 +143,12 @@ void Browser::apply_package(const std::vector<uint8_t>& bytes) {
     m_metrics.package_bytes = package_bytes;
     m_metrics.state_count = state_count;
     for (Page& page : m_package.pages) for_each_node(page.root, [&](Node&) { ++m_metrics.node_count; });
+    try {
+        validate_required_devices();
+    } catch (...) {
+        close_devices();
+        throw;
+    }
     open_page_index(0, false);
 }
 void Browser::open_page(std::string_view name, bool remember) {
@@ -200,9 +208,13 @@ void Browser::write_state(uint32_t index, const Value& value) {
         throw ScriptError("state assignment does not preserve its declared type");
     }
     if (value.type == Value::Type::number && !std::isfinite(value.number)) throw ScriptError("non-finite state value");
-    const bool unchanged = value.type == Value::Type::string ? previous.string == value.string
-        : value.type == Value::Type::number ? previous.number == value.number
-        : previous.boolean == value.boolean;
+    const bool unchanged =
+        value.type == Value::Type::string ? previous.string == value.string :
+        value.type == Value::Type::number ? previous.number == value.number :
+        value.type == Value::Type::integer ? previous.integer == value.integer :
+        value.type == Value::Type::bytes ? previous.bytes == value.bytes || *previous.bytes == *value.bytes :
+        value.type == Value::Type::handle ? previous.handle == value.handle :
+        previous.boolean == value.boolean;
     if (unchanged) return;
     m_state[index] = value;
     if (m_focus != nullptr && m_focus->binding == index) m_cursor_byte = m_state[index].string.size();
@@ -227,25 +239,7 @@ void Browser::handle_error(std::string_view message) {
 }
 
 void Browser::invoke(uint32_t function) {
-    if (function == no_index) return;
-    if (function >= m_package.functions.size()) throw ScriptError("handler index is out of bounds");
-    if (m_invocations >= 8) {
-        handle_error("page on_load navigation exceeds eight levels");
-        return;
-    }
-    ++m_invocations;
-    ++m_metrics.scripts;
-    struct Restore {
-        uint32_t& invocations;
-        ~Restore() { --invocations; }
-    } restore{m_invocations};
-    try {
-        execute_script(m_package, function, {}, *this);
-    } catch (const Navigation&) {
-        cancel_pointer_gesture();
-    } catch (const std::exception& error) {
-        handle_error(error.what());
-    }
+    invoke(function, std::span<const Value>{});
 }
 
 void Browser::dispatch(std::string_view function_name) {
@@ -448,6 +442,7 @@ bool Browser::tick() {
     advance_timers(now);
     process_content_requests();
     advance_animations(now);
+    process_devices();
     if (m_error_until != 0 && m_error_until <= now) {
         m_error_until = 0;
         m_full_repaint = true;

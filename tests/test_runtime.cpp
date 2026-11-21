@@ -112,7 +112,7 @@ struct TestPlatform final : mb::Platform {
     uint64_t now_ms() const override { return time; }
     void start_request(uint32_t id, std::string requested_url) override {
         url = std::move(requested_url);
-        completed.push_back({id, status, url.ends_with("/data") ? response : raw_response, {}});
+        completed.push_back({id, status, url.ends_with("/data") ? response : raw_response, {}, {}});
         if (completed.back().error.empty()) {
             completed.back().body = response.find("current") != std::string::npos ? response : raw_response;
         }
@@ -123,7 +123,7 @@ struct TestPlatform final : mb::Platform {
         completed.erase(completed.begin());
         return true;
     }
-    void start_content(uint32_t id, mb::ContentRequest request) override {
+    void start_content(uint32_t, mb::ContentRequest request) override {
         url = std::move(request.url);
     }
     bool poll_content(mb::HttpResult&) override { return false; }
@@ -525,6 +525,60 @@ void test_vm_and_json() {
     expect_script_error([&] { (void)mb::read_json_scalar("{} trailing", "", mb::Value::Type::string); });
 }
 
+mb::Package integer_math_package(int64_t left, int64_t right, uint8_t operation) {
+    mb::Package package;
+    package.format_major = 3;
+    mb::Function function;
+    function.name = "integer_math";
+    function.constants = {mb::Value::from_integer(left), mb::Value::from_integer(right)};
+    function.code = {1, 0, 0, 1, 1, 0, operation, 24};
+    package.functions.push_back(std::move(function));
+    return package;
+}
+
+void test_integer_arithmetic() {
+    VmHost host;
+    const auto exact = integer_math_package(9007199254740993LL, 1, 8);
+    CHECK(mb::execute_script(exact, 0, {}, host).integer == 9007199254740994LL);
+    CHECK(mb::execute_script(integer_math_package(-4, 2, 11), 0, {}, host).integer == -2);
+    for (const auto& invalid : {
+             integer_math_package(INT64_MAX, 1, 8),
+             integer_math_package(INT64_MIN, 1, 9),
+             integer_math_package(INT64_MAX, 2, 10),
+             integer_math_package(INT64_MIN, -1, 11),
+         }) {
+        expect_script_error([&] { (void)mb::execute_script(invalid, 0, {}, host); });
+    }
+    auto negation = integer_math_package(INT64_MIN, 0, 0);
+    negation.functions[0].code = {1, 0, 0, 12, 24};
+    expect_script_error([&] { (void)mb::execute_script(negation, 0, {}, host); });
+    auto legacy = integer_math_package(1, 2, 8);
+    legacy.format_major = 2;
+    expect_script_error([&] { (void)mb::execute_script(legacy, 0, {}, host); });
+}
+
+void test_device_value_abi() {
+    const auto integer = mb::Value::from_integer(std::numeric_limits<int64_t>::max());
+    CHECK(integer.type == mb::Value::Type::integer);
+    CHECK(integer.integer == std::numeric_limits<int64_t>::max());
+    const auto bytes = mb::Value::from_bytes(mb::ByteBuffer{0, 0x80, 0xff});
+    REQUIRE(bytes.bytes != nullptr);
+    CHECK(bytes.bytes->at(0) == 0);
+    CHECK(bytes.bytes->at(1) == 0x80);
+    CHECK(bytes.bytes->at(2) == 0xff);
+    expect_script_error([] { (void)mb::Value::from_bytes(mb::ByteBufferPtr{}); });
+    const auto gpio = mb::Value::from_handle(mb::DeviceHandle{mb::Capability::gpio, 1, 2, 3});
+    CHECK(gpio.type == mb::Value::Type::handle);
+    CHECK((gpio.handle == mb::DeviceHandle{mb::Capability::gpio, 1, 2, 3}));
+    expect_script_error([] {
+        (void)mb::Value::from_handle(mb::DeviceHandle{mb::Capability::gpio, 0, 0, 0});
+    });
+    expect_script_error([] {
+        (void)mb::Value::from_handle(mb::DeviceHandle{mb::Capability::none, 1, 2, 3});
+    });
+    CHECK(mb::Value::from_handle().handle.is_empty());
+}
+
 void test_framebuffer_initialization() {
     TestPlatform platform;
     mb::Browser browser(platform, {64, 64});
@@ -558,6 +612,8 @@ int main(int argc, char** argv) {
         CHECK(dashboard.last_error().empty());
         test_ui(argv[2]);
         test_vm_and_json();
+        test_integer_arithmetic();
+        test_device_value_abi();
         test_canvas_image_clip();
         test_font_metrics_and_rounding();
         test_integer_formatting();

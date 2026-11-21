@@ -377,6 +377,16 @@ std::string decode_hex(std::string_view encoded) {
     }
     return decoded;
 }
+uint64_t decode_integer(std::string_view encoded) {
+    if (encoded.size() != 16) throw std::invalid_argument("integer encoding must contain sixteen hex digits");
+    uint64_t bits = 0;
+    for (const char character : encoded) {
+        const int digit = hex_digit(static_cast<unsigned char>(character));
+        if (digit < 0) throw std::invalid_argument("invalid integer encoding");
+        bits = (bits << 4U) | static_cast<uint64_t>(digit);
+    }
+    return bits;
+}
 
 uint32_t decode_number(std::string_view encoded) {
     if (encoded.size() != 8) throw std::invalid_argument("number encoding must contain eight hex digits");
@@ -407,6 +417,11 @@ Value parse_record(std::string_view line) {
         throw std::invalid_argument("boolean encoding must be 0 or 1");
     case 's':
         return Value::from_string(decode_hex(encoded_value));
+    case 'i': return Value::from_integer(std::bit_cast<int64_t>(decode_integer(encoded_value)));
+    case 'x': {
+        const std::string bytes = decode_hex(encoded_value);
+        return Value::from_bytes(ByteBuffer(bytes.begin(), bytes.end()));
+    }
     default:
         throw std::invalid_argument("unknown persistent value type");
     }
@@ -473,8 +488,10 @@ constexpr std::array<char, 16> hexadecimal_digits{
 };
 } // namespace
 
-void write_hex(std::ostream& output, std::string_view bytes) {
-    for (const unsigned char byte : bytes) {
+void write_hex(std::ostream& output, const void* data, std::size_t length) {
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    for (std::size_t index = 0; index < length; ++index) {
+        const unsigned char byte = bytes[index];
         const std::array<char, 2> encoded{hexadecimal_digits[byte >> 4U], hexadecimal_digits[byte & 0x0fU]};
         output.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
     }
@@ -489,6 +506,16 @@ void write_number(std::ostream& output, float number) {
     }
     output.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
 }
+void write_integer(std::ostream& output, int64_t value) {
+    // Retain the exact two's-complement representation, including negative values.
+    uint64_t bits = std::bit_cast<uint64_t>(value);
+    std::array<char, 16> encoded{};
+    for (std::size_t index = encoded.size(); index > 0; --index) {
+        encoded[index - 1] = hexadecimal_digits[bits & 0x0fU];
+        bits >>= 4U;
+    }
+    output.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
+}
 
 void write_records(const std::filesystem::path& destination, const Records& records) {
     TemporaryFile temporary = temporary_path_for(destination);
@@ -497,24 +524,25 @@ void write_records(const std::filesystem::path& destination, const Records& reco
         if (!output) throw_state_error(destination, "cannot open a temporary state file");
         for (const auto& [name, value] : records) {
             switch (value.type) {
-            case Value::Type::number:
-                output.put('n');
-                break;
-            case Value::Type::boolean:
-                output.put('b');
-                break;
-            case Value::Type::string:
-                output.put('s');
-                break;
-            case Value::Type::void_value:
-                throw_state_error(destination, "cannot persist a void value");
+            case Value::Type::number: output.put('n'); break;
+            case Value::Type::boolean: output.put('b'); break;
+            case Value::Type::string: output.put('s'); break;
+            case Value::Type::integer: output.put('i'); break;
+            case Value::Type::bytes: output.put('x'); break;
+            case Value::Type::handle: throw_state_error(destination, "cannot persist a device handle");
+            case Value::Type::void_value: throw_state_error(destination, "cannot persist a void value");
             }
             output.put(':');
-            write_hex(output, name);
+            write_hex(output, name.data(), name.size());
             output.put(':');
             if (value.type == Value::Type::number) write_number(output, value.number);
             if (value.type == Value::Type::boolean) output.put(value.boolean ? '1' : '0');
-            if (value.type == Value::Type::string) write_hex(output, value.string);
+            if (value.type == Value::Type::string) write_hex(output, value.string.data(), value.string.size());
+            if (value.type == Value::Type::integer) write_integer(output, value.integer);
+            if (value.type == Value::Type::bytes) {
+                if (!value.bytes) throw_state_error(destination, "cannot persist a null byte buffer");
+                write_hex(output, value.bytes->data(), value.bytes->size());
+            }
             output.put('\n');
         }
         output.flush();

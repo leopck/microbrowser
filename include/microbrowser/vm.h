@@ -23,7 +23,9 @@ struct VmHost {
     virtual Value read_state(uint32_t index) const = 0;
     virtual void write_state(uint32_t index, const Value& value) = 0;
     virtual Value builtin(uint8_t id, std::span<const Value> arguments) = 0;
+    virtual Value device_call(std::uint16_t operation, std::span<const Value>);
 };
+
 
 // Calls, immediate validation, and bounds are checked on every event. Compilation
 // checks these too; the runtime still verifies downloaded packages.

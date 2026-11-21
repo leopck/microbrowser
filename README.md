@@ -26,7 +26,8 @@ Regenerate it with <code>tools/capture_screenshots.py</code>.</sub>
 [ESP32-S3 &amp; QEMU](#esp32-s3-and-qemu) ·
 [Authoring guide](docs/authoring.md) ·
 [Package format](docs/package-format.md)
-
+[Hardware publication and portability guide](docs/hardware-api.md)<br>
+[Hardware platform plan](docs/hardware-platform-plan.md)
 </div>
 
 ---
@@ -62,6 +63,24 @@ The preferred format is an **authored-application browser**. For existing HTML p
     <td align="center"><img src="docs/screenshots/web-reader.png" width="320" alt="Public web page in Reader on the emulated ESP32-S3"><br><sub>An actual HTTPS page converted to Reader and rendered by QEMU</sub></td>
   </tr>
 </table>
+
+
+## Build on GitHub Actions
+
+[`.github/workflows/build.yml`](.github/workflows/build.yml) is the primary build path. Open **Actions → Build → Run workflow**, or push a source change. Builds use GitHub-hosted Linux runners and official Espressif/Nordic toolchain containers; an ESP-IDF or Nordic SDK installation on your laptop is not required.
+
+| Job | Output artifact |
+|---|---|
+| Shared application packages | `application-packages`: five compiled `.mbp` applications, including the dashboard and GATT conformance application |
+| Desktop application and host tests | `microbrowser-desktop`: Ubuntu application and replay captures |
+| ESP32-S3 firmware and QEMU dashboard | `microbrowser-esp32s3`: owner-selected GATT firmware, `.mbp` embedded in the image, ESP32 build configuration, and QEMU LCD capture |
+| nRF5340 application and network-core firmware | `microbrowser-nrf5340`: application/controller ELF and HEX files, linker maps, and embedded-package identity |
+
+The package job compiles the applications once. Firmware jobs download those exact artifacts, and their build-configuration paths select `gatt_conformance.mbp` explicitly. SDK containers, action revisions, and the Nordic SDK manifest are pinned. Artifacts are retained for seven days.
+
+Use the individual job logs to distinguish package compilation, host tests, firmware builds, and package-download failures. A successful CI compilation is not physical-hardware validation. QEMU cannot provide a physical BLE controller; the nRF job compiles real Zephyr firmware, but radio validation requires hardware and a provisioned peer. Host-modeled GPIO/HTTP behavior is not a hardware proof.
+
+The `gh` CLI and repository push permission are the only GitHub tooling expected on a temporary working machine. No compiler or SDK reinstallation is needed there.
 
 ## Quick start
 
@@ -127,6 +146,24 @@ python3 tools/mbc inspect build/counter.mbp                    # validate and su
 
 Assigning to `state.value` repaints only the widgets bound to it. Compile errors report `file:line:column`. The [authoring guide](docs/authoring.md) builds the full two-page version step by step, including settings, navigation and persistence.
 
+## Hardware application quick start
+
+Applications can request named, versioned peripherals while sharing their package
+bytes across compatible ports. Permissions and physical pin ownership are
+explicit; unsupported roles are not simulated successes.
+
+```sh
+python3 tools/mbc build examples/gpio_conformance.mb -o build/gpio_conformance.mbp
+python3 tools/mbc inspect build/gpio_conformance.mbp
+make check-gpio
+```
+
+The host test executes the same artifact through embedded and explicitly
+confirmed-download paths. Its GPIO and HTTP responses are modeled. See the
+[hardware guide](docs/hardware-api.md) for owner-selected ESP32 and nRF builds,
+the capability matrix, and the current physical-validation limits.
+
+
 ## Open a website
 
 Start the trusted gateway in one terminal, then open the desktop browser in another:
@@ -165,7 +202,7 @@ To publish static reading pages, use `tools/publish_reader.py`; its `.mbr.json` 
 **Behaviour**
 - Declarative `{state.x}` bindings with per-widget invalidation
 - `fade`, `slide` and `pulse` animations evaluated natively each frame without running script
-- Typed script: `f32`, `bool` and `string`, functions, `if`/`while`, timers, HTTP(S) with JSON paths and persistent storage
+- Typed script: `f32`, `i64`, `bool`, `string`, immutable bytes and opaque resource handles; functions, `if`/`while`, timers, HTTP(S) with JSON paths and persistent storage
 - Hard limits on instructions, stack, locals, call depth, timers and in-flight requests
 
 **Tooling**
@@ -191,8 +228,8 @@ flowchart LR
     LAY --> PAINT["paint.cpp<br/>damage regions → RGB565"]
   end
   PAINT --> DESK["platform/desktop.cpp<br/>SDL2 · libcurl"]
-  PAINT --> ESP["platform/esp_idf.cpp<br/>esp_lcd · NVS · esp_http_client"]
-```
+  PAINT --> ESP["platform/esp_idf.cpp<br/>ESP-IDF · NVS · async HTTP"]
+  PAINT --> ZEPHYR["platform/zephyr_platform.cpp<br/>Zephyr · NVS · bounded HTTP jobs"]
 
 The `Platform` interface ([`include/microbrowser/platform.h`](include/microbrowser/platform.h)) is the porting boundary. It provides the clock, logging, storage and asynchronous HTTP; the rest of `core/` is identical on desktop and device. This diagram shows native applications. Reader content bypasses `mbc`: `core/url_navigation.cpp` fetches `microbrowser-reader-v1` JSON through the gateway or a static `.mbr.json` URL, then `core/json.cpp` validates its fields before native layout and drawing.
 
@@ -205,10 +242,10 @@ Measured with the bundled climate dashboard (3 pages, 141 nodes, 29 functions):
 | Metric | Value | Source |
 |---|---|---|
 | Compiled package | 15,581 bytes | `mbc build` |
-| Internal heap free after self-test | 199,143 bytes | QEMU `stats` after dashboard self-test |
-| Internal heap low-water mark | 158,568 bytes | same |
+| Internal heap free after self-test | 180,455 bytes | QEMU `stats` after dashboard self-test |
+| Internal heap low-water mark | 126,904 bytes | same |
 | Framebuffer, 480×320 RGB565 | 307,200 bytes in PSRAM | runtime report |
-| Main-task stack headroom | 4,064 bytes | same |
+| Main-task stack headroom | 3,568 bytes | same |
 | Desktop layout pass | ~0.1 ms | `--headless` report on an Apple-silicon host |
 
 QEMU and desktop timings are not ESP32 performance claims. Measure frame rate on your target panel; on SPI displays, the bus is usually the limit. `--spi-hz` estimates that ceiling.
@@ -232,6 +269,24 @@ This builds the dashboard package and firmware, then boots an emulated ESP32-S3 
 
 > **Porting to a real board:** [`firmware/main/main.cpp`](firmware/main/main.cpp) creates the QEMU RGB panel (`esp_lcd_rgb_qemu`). For hardware, replace it with your panel's `esp_lcd` driver and feed touch events to `Browser::pointer_down/move/up`. Layout, drawing, scripts, storage and networking need no changes.
 
+## Nordic GPIO and simulation
+
+`firmware/nrf5340_gpio/build.sh` builds the owner-selected nRF5340 SDK GPIO
+application. `firmware/nrf5340_gpio/bsim.sh` executes the same Zephyr driver
+against Nordic's input-driven Bsim model: alternating edges, unsubscribe/revocation,
+close, and a normal process exit are all required. This does not emulate nRF7002
+Wi-Fi or replace physical board validation. `firmware/nrf5340_app/bsim.sh`
+builds the shared Browser/portable-artifact target; its headless RGB565 logs
+describe the shared renderer, not a physical display.
+
+The Nordic fixture first exercises GPIO1.9 event-link COUNT/CC0 capture with
+application TIMER0, verifies stop/restart count preservation and rejects TIMER1,
+then closes that route before exercising ordinary GPIO on P0.23. Bsim rejects
+other timer instances because its TIMER register-array layout differs from
+application MDK; actual hardware validation remains separate.
+
+
+
 ## Testing
 
 ```sh
@@ -240,6 +295,11 @@ make qemu   # embedded build plus emulator interaction and LCD capture
 make web-test  # make test, then gateway unit and real-Chromium integration tests
 ```
 
+
+```sh
+make nrf-gpio-sim  # actual Zephyr driver under Nordic Bsim
+make check-gpio   # identical embedded and confirmed-download artifact
+```
 `make test` replays [`tests/dashboard.events`](tests/dashboard.events) and [`tests/counter.events`](tests/counter.events). These scripts simulate real clicks, drags and typing against the compiled packages and fail on any script error or self-test failure. Write your own with `click`, `down`, `move`, `up`, `text`, `key`, `scroll`, `call`, `wait` and `shot`:
 
 ```sh
@@ -280,7 +340,7 @@ The limits and rationale are documented in the [authoring guide](docs/authoring.
 
 Issues and pull requests are welcome. Before you open a pull request:
 
-1. Run `make web-test`; run `make qemu` too if you changed `core/`, `platform/esp_idf.cpp` or `firmware/`.
+1. Push your source change and run the `Build` GitHub Actions workflow. It covers shared packages, native tests, gateway checks, ESP32-S3 QEMU, and nRF5340 firmware compilation.
 2. Add or update a replay in `tests/*.events` for user-visible behavior.
 3. If you changed the language or binary layout, update [`docs/authoring.md`](docs/authoring.md) or [`docs/package-format.md`](docs/package-format.md).
 4. If your change affects UI output, run `tools/capture_screenshots.py`.

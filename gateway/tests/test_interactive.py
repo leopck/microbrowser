@@ -9,7 +9,11 @@ import threading
 import unittest
 
 from gateway.extract import GatewayError, URLPolicy
-from gateway.interactive import DEFAULT_CHROMIUM_PATH, InteractiveService, playwright_available
+from gateway.interactive import (
+    InteractiveService,
+    find_chromium_executable,
+    playwright_available,
+)
 
 
 class InteractiveDependencyTests(unittest.TestCase):
@@ -90,8 +94,8 @@ class _InteractiveFixture(BaseHTTPRequestHandler):
 
 
 @unittest.skipUnless(
-    playwright_available() and os.path.exists(DEFAULT_CHROMIUM_PATH),
-    "Pinned Playwright or installed Chrome is unavailable",
+    playwright_available() and find_chromium_executable() is not None,
+    "Playwright and a usable Chromium executable are required",
 )
 class InteractiveChromiumTests(unittest.TestCase):
     def test_dynamic_content_session_anchor_navigation_and_sensitive_rejection(self) -> None:

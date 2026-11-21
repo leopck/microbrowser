@@ -1,7 +1,10 @@
 #include "microbrowser/package.h"
 
 #include "fonts.h"
+#include "microbrowser/peripherals.h"
 
+
+#include <algorithm>
 #include <utility>
 #include <array>
 #include <bit>
@@ -33,6 +36,10 @@ constexpr std::size_t max_code_bytes = 65'535;
 constexpr std::size_t max_pages = 32;
 constexpr std::size_t max_nodes = 2'048;
 constexpr std::size_t max_node_depth = 32;
+constexpr std::size_t max_declared_capabilities = 32;
+constexpr std::size_t max_permission_endpoints = 32;
+constexpr std::uint16_t maximum_capability_id =
+    static_cast<std::uint16_t>(Capability::espressif_gpio_matrix);
 constexpr std::size_t max_node_children = 64;
 constexpr std::size_t max_properties = 40;
 constexpr std::size_t max_asset_dimension = 2'048;
@@ -85,6 +92,15 @@ public:
         return result;
     }
 
+    int64_t read_i64() {
+        require(8, "64-bit integer");
+        const uint32_t low = read_u32();
+        const uint32_t high = read_u32();
+        const uint64_t encoded = uint64_t(low) | (uint64_t(high) << 32U);
+        return encoded <= uint64_t(std::numeric_limits<int64_t>::max())
+            ? static_cast<int64_t>(encoded)
+            : -1 - static_cast<int64_t>(~encoded);
+    }
     float read_float() {
         const float result = std::bit_cast<float>(read_u32());
         if (!std::isfinite(result)) {
@@ -237,6 +253,74 @@ void parse_strings(ByteReader& reader, Package& package) {
     }
 }
 
+void parse_capabilities(ByteReader& reader, Package& package) {
+    const uint16_t count = reader.read_u16();
+    if (count > max_declared_capabilities) {
+        reader.fail("capability count exceeds 32");
+    }
+    std::unordered_set<uint16_t> declarations;
+    declarations.reserve(count);
+    for (uint16_t index = 0; index < count; ++index) {
+        const uint16_t raw_capability = reader.read_u16();
+        CapabilityVersion declaration;
+        declaration.capability = static_cast<Capability>(raw_capability);
+        declaration.major = reader.read_u16();
+        declaration.minor = reader.read_u16();
+        const uint16_t required = reader.read_u16();
+        if (raw_capability == 0 || raw_capability > maximum_capability_id) {
+            reader.fail("unknown hardware capability identifier " + std::to_string(raw_capability));
+        }
+        if (declaration.major != peripheral_abi_major) {
+            reader.fail("capability major version does not match peripheral ABI version 1");
+        }
+        if (required > 1) {
+            reader.fail("capability required flag must be zero or one");
+        }
+        if (!declarations.insert(raw_capability).second) {
+            reader.fail("duplicate hardware capability " + std::to_string(raw_capability));
+        }
+        if (required == 1) {
+            package.required_capabilities.push_back(declaration);
+        } else {
+            package.optional_capabilities.push_back(declaration);
+        }
+    }
+    reader.finish();
+}
+
+void parse_permission_endpoints(ByteReader& reader, Package& package) {
+    const uint16_t count = reader.read_u16();
+    if (count > max_permission_endpoints) {
+        reader.fail("permission endpoint count exceeds 32");
+    }
+    std::unordered_set<std::string> names;
+    names.reserve(count);
+    for (uint16_t index = 0; index < count; ++index) {
+        const uint16_t length = reader.read_u16();
+        if (length == 0 || length > 64) {
+            reader.fail("permission endpoint name length must be 1 through 64 bytes");
+        }
+        const std::size_t name_offset = reader.position();
+        const std::span<const uint8_t> encoded = reader.read_bytes(length);
+        const std::string_view name(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+        validate_utf8(name, "permission endpoint name");
+        const bool valid = std::all_of(name.begin(), name.end(), [](unsigned char character) {
+            return (character >= 'a' && character <= 'z') ||
+                   (character >= 'A' && character <= 'Z') ||
+                   (character >= '0' && character <= '9') ||
+                   character == '_' || character == '.' || character == '-';
+        });
+        if (!valid) {
+            reader.fail_at(name_offset, "permission endpoint must use ASCII alphanumerics, '.', '_' or '-'");
+        }
+        if (!names.emplace(name).second) {
+            reader.fail_at(name_offset, "duplicate permission endpoint name");
+        }
+        package.permission_endpoints.emplace_back(name);
+    }
+    reader.finish();
+}
+
 Value parse_typed_value(ByteReader& reader, const Package& package, std::string_view description) {
     const uint8_t tag = reader.read_u8();
     Value result;
@@ -254,12 +338,32 @@ Value parse_typed_value(ByteReader& reader, const Package& package, std::string_
         result.boolean = boolean != 0;
         break;
     }
-    case 2: {
+    case 2:
         result.type = Value::Type::string;
-        const uint32_t index = reader.read_u32();
-        result.string = string_at(package, index, description);
+        result.string = string_at(package, reader.read_u32(), description);
+        break;
+    case 3:
+        if (package.format_major < 3) {
+            reader.fail_at(reader.position() - 1, "64-bit integers require package major version 3");
+        }
+        result = Value::from_integer(reader.read_i64());
+        break;
+    case 4: {
+        if (package.format_major < 3) {
+            reader.fail_at(reader.position() - 1, "byte buffers require package major version 3");
+        }
+        const uint32_t length = reader.read_u32();
+        if (length > 4096) reader.fail("byte buffer exceeds 4,096 bytes");
+        const std::span<const uint8_t> data = reader.read_bytes(length);
+        result = Value::from_bytes(ByteBuffer(data.begin(), data.end()));
         break;
     }
+    case 5:
+        if (package.format_major < 3 || reader.read_u16() != 0) {
+            reader.fail_at(reader.position() - 1, "only an empty handle can appear in a package");
+        }
+        result = Value::from_handle();
+        break;
     default:
         reader.fail_at(reader.position() - 1, "unknown value kind " + std::to_string(tag));
     }
@@ -315,18 +419,31 @@ void validate_function_code(const Package& package, const Function& function) {
     std::size_t pc = 0;
     while (pc < function.code.size()) {
         const uint8_t opcode = function.code[pc];
-        if (opcode == 0 || opcode > 24) {
+        if (opcode == 0 || opcode > 25) {
             fail(pc, "unknown opcode " + std::to_string(opcode));
+        }
+        if (opcode == 25 && package.format_major < 3) {
+            fail(pc, "device calls require package major version 3");
         }
         std::size_t size = 1;
         if (opcode == 1 || (opcode >= 3 && opcode <= 6) || opcode == 20 || opcode == 21) {
             size = 3;
         } else if (opcode == 2 || opcode == 23) {
             size = opcode == 2 ? 2 : 3;
-        } else if (opcode == 22) {
+        } else if (opcode == 22 || opcode == 25) {
             size = 4;
         }
         require_code_bytes(function, pc, size);
+        if (opcode == 25) {
+            const uint16_t operation = code_u16(function, pc + 1);
+            if (operation == 0 ||
+                (operation > 16 && (operation < 200 || operation > 210))) {
+                fail(pc, "unknown device call " + std::to_string(operation));
+            }
+            if (function.code[pc + 3] > 8) {
+                fail(pc, "device call has more than eight arguments");
+            }
+        }
         boundaries[pc] = 1;
         switch (opcode) {
         case 1:
@@ -1097,7 +1214,8 @@ Package parse_package(const std::vector<uint8_t>& bytes) {
         header.read_u8() != 'K') {
         throw PackageError("package magic is not MBPK");
     }
-    if (header.read_u16() != 2) {
+    const uint16_t format_major = header.read_u16();
+    if (format_major != 2 && format_major != 3) {
         throw PackageError("unsupported package major version");
     }
     if (header.read_u16() != 0) {
@@ -1120,8 +1238,11 @@ Package parse_package(const std::vector<uint8_t>& bytes) {
     }
 
     Package package;
+    package.format_major = format_major;
     ByteReader sections(bytes, 20, bytes.size(), "package sections");
     bool have_strings = false;
+    bool have_capabilities = false;
+    bool have_permissions = false;
     bool have_states = false;
     bool have_code = false;
     bool have_data = false;
@@ -1139,11 +1260,32 @@ Package parse_package(const std::vector<uint8_t>& bytes) {
                                                                      section_description(identifier) +
                                                                      "'");
         if (name == "STRS") {
-            if (have_strings || have_states || have_code || !package.pages.empty() || have_data) {
+            if (have_strings || have_capabilities || have_permissions || have_states || have_code ||
+                !package.pages.empty() || have_data) {
                 throw PackageError("duplicate or out-of-order STRS section");
             }
             parse_strings(payload, package);
             have_strings = true;
+        } else if (name == "CAPS") {
+            if (format_major < 3) {
+                throw PackageError("CAPS requires package major version 3");
+            }
+            if (!have_strings || have_capabilities || have_permissions || have_states || have_code ||
+                !package.pages.empty() || have_data) {
+                throw PackageError("duplicate or out-of-order CAPS section");
+            }
+            parse_capabilities(payload, package);
+            have_capabilities = true;
+        } else if (name == "PERM") {
+            if (format_major < 3) {
+                throw PackageError("PERM requires package major version 3");
+            }
+            if (!have_strings || have_permissions || have_states || have_code ||
+                !package.pages.empty() || have_data) {
+                throw PackageError("duplicate or out-of-order PERM section");
+            }
+            parse_permission_endpoints(payload, package);
+            have_permissions = true;
         } else if (name == "STAT") {
             if (!have_strings || have_states || have_code || !package.pages.empty() || have_data) {
                 throw PackageError("duplicate or out-of-order STAT section");

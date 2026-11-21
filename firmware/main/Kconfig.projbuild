@@ -8,6 +8,241 @@ config MB_QEMU_ETHERNET
         Initialize the virtual OpenCores Ethernet device provided by Espressif
         QEMU. QEMU does not emulate Wi-Fi; this is a real lwIP Ethernet path.
 
+menuconfig MB_GPIO
+    bool "Enable owner-declared native GPIO endpoints"
+    default n
+    help
+        No GPIO aliases are enabled by default. The QEMU RGB panel does not use
+        physical display or touch pins. Board owners must explicitly enable and
+        allocate pins here, avoiding console, strapping, flash/PSRAM, display,
+        touch and other in-use pins. Package applications cannot select pin
+        numbers. Level subscriptions have bounded coalescing/backpressure and
+        are not exact/high-rate pulse capture.
+
+if MB_GPIO
+
+config MB_GPIO_STATUS_LED
+    bool "Expose output alias status_led"
+    default n
+
+config MB_GPIO_STATUS_LED_PIN
+    int "status_led ESP32-S3 GPIO number"
+    depends on MB_GPIO_STATUS_LED
+    range 0 48
+    default 2
+    help
+        The alias permits configure/read/write only. Verify this assignment on
+        the attached board before enabling it; no attached board is assumed.
+
+config MB_GPIO_USER_BUTTON
+    bool "Expose input alias user_button"
+    default n
+
+config MB_GPIO_USER_BUTTON_PIN
+    int "user_button ESP32-S3 GPIO number"
+    depends on MB_GPIO_USER_BUTTON
+    range 0 48
+    default 4
+    help
+        The alias permits configure/read/subscribe only. Writes and output
+        configuration are denied. Verify the board connection before enabling.
+        GPIO4 is a development profile used by gpio_conformance.mbp; it is not
+        a discovery of an attached button. ESP-IDF QEMU provides no physical
+        button or GPIO edge/IRQ stimulus, so successful startup is not an IRQ
+        conformance result.
+
+endif # MB_GPIO
+
+menuconfig MB_BLE_CENTRAL
+    bool "Enable owner-declared BLE GATT central endpoints"
+    default n
+    depends on BT_ENABLED && BT_CONTROLLER_ENABLED
+    depends on BT_NIMBLE_ROLE_CENTRAL && BT_NIMBLE_GATT_CLIENT
+    # Choose the host stack and core explicitly in the owner profile.
+    help
+        Uses the ESP32-S3's real NimBLE host and Bluetooth controller. No BLE
+        endpoint is exposed unless the board owner enables its logical name.
+        This does not implement physical ble_peripheral, pairing, Bluetooth
+        audio transport, USB audio, or operation over QEMU's virtual LCD or
+        Ethernet. BLE requires hardware and an appropriately provisioned peer.
+
+if MB_BLE_CENTRAL
+
+config MB_BLE_SCAN_TIMEOUT_MS
+    int "BLE peer discovery window in milliseconds"
+    range 100 60000
+    default 5000
+    help
+        The board owner bounds each native discovery window. Applications choose
+        their result limit, but cannot disable the deadline.
+
+endif # MB_BLE_CENTRAL
+
+menuconfig MB_SPI
+    bool "Enable owner-declared native SPI endpoints"
+    default n
+    help
+        Disabled leaves the SPI configuration span empty and allocates no SPI
+        controller, GPIO, queue, worker, or DMA staging buffer. Each enabled
+        endpoint reserves two bounded work records, internal-DMA staging, and
+        a 6144-byte worker stack. IDF xTaskCreate stack sizes are bytes.
+
+if MB_SPI
+
+config MB_SPI_SENSOR
+    bool "Expose single-lane controller alias spi_sensor"
+    default n
+    help
+        The static main.cpp owner profile uses SPI2_HOST, SPI mode 0 only,
+        automatic DMA selection, 1 MHz maximum, 1024-byte phases, 1000 ms I/O
+        timeout, and two pending records. Applications cannot select pins,
+        hosts, DMA channels, or chip-select timing. Dual/quad/octal lanes,
+        dummy phases, and software bit-banging are not advertised.
+
+config MB_SPI_SENSOR_MOSI_PIN
+    int "spi_sensor MOSI ESP32-S3 GPIO number"
+    depends on MB_SPI_SENSOR
+    range 0 48
+    default 11
+
+config MB_SPI_SENSOR_MISO_PIN
+    int "spi_sensor MISO ESP32-S3 GPIO number"
+    depends on MB_SPI_SENSOR
+    range 0 48
+    default 13
+
+config MB_SPI_SENSOR_CLOCK_PIN
+    int "spi_sensor clock ESP32-S3 GPIO number"
+    depends on MB_SPI_SENSOR
+    range 0 48
+    default 12
+
+config MB_SPI_SENSOR_CS_PIN
+    int "spi_sensor chip-select ESP32-S3 GPIO number"
+    depends on MB_SPI_SENSOR
+    range 0 48
+    default 10
+    help
+        The example reserves GPIO10/11/12/13 for CS/MOSI/SCLK/MISO. These are
+        explicit ESP32-S3 owner choices, not probed connections. Do not assign
+        UART0 GPIO43/44, USB GPIO19/20, flash/PSRAM pins, strapping GPIO0/3/
+        45/46, or a display/touch/LED/button pin. Startup rejects duplicates
+        across every enabled peripheral family before reserving hardware.
+
+endif # MB_SPI
+
+menuconfig MB_I2C
+    bool "Enable owner-declared native I2C endpoints"
+    default n
+    help
+        Disabled leaves the I2C configuration span empty and allocates no
+        hardware or worker. The enabled profile uses synchronous native FIFO
+        transactions, two bounded internal-RAM staging records, a 6144-byte
+        worker stack, and a 1000 ms bounded I/O wait.
+
+if MB_I2C
+
+config MB_I2C_SENSOR_BUS
+    bool "Expose controller alias sensor_bus"
+    default n
+    help
+        The static main.cpp owner profile uses only I2C_NUM_0 at 100 kHz,
+        seven-bit addresses, a 2000 us SCL wait, 1024-byte phases, and external
+        pull-ups. Internal pulls are off. The allowlist below is inclusive;
+        reserved seven-bit encodings and ten-bit addresses are denied.
+
+config MB_I2C_SENSOR_SDA_PIN
+    int "sensor_bus SDA ESP32-S3 GPIO number"
+    depends on MB_I2C_SENSOR_BUS
+    range 0 48
+    default 8
+
+config MB_I2C_SENSOR_SCL_PIN
+    int "sensor_bus SCL ESP32-S3 GPIO number"
+    depends on MB_I2C_SENSOR_BUS
+    range 0 48
+    default 9
+    help
+        GPIO8/9 are owner-example choices only. Verify external pull-ups and
+        the attached schematic before enabling. Avoid console, USB, flash/
+        PSRAM, strapping, display/touch, and every other enabled endpoint pin.
+
+config MB_I2C_SENSOR_FIRST_ADDRESS
+    hex "First allowed seven-bit sensor_bus address"
+    depends on MB_I2C_SENSOR_BUS
+    range 0x08 0x77
+    default 0x48
+
+config MB_I2C_SENSOR_LAST_ADDRESS
+    hex "Last allowed seven-bit sensor_bus address"
+    depends on MB_I2C_SENSOR_BUS
+    range 0x08 0x77
+    default 0x48
+    help
+        The example permits only address 0x48. Set both values to the actual
+        owner's device range; a range with first greater than last is rejected
+        before the native bus is created. Compilation does not prove a device
+        is present or that a transaction has succeeded.
+
+endif # MB_I2C
+
+menuconfig MB_I2S
+    bool "Enable owner-declared native I2S endpoints"
+    default n
+    help
+        Disabled leaves the I2S configuration span empty and allocates no
+        controller, channel, callback, queue, worker, or DMA staging buffer.
+        The enabled profile uses two bounded records and a 6144-byte worker
+        stack. Internal-DMA source/result storage is separate from PSRAM.
+
+if MB_I2S
+
+config MB_I2S_AUDIO_OUTPUT
+    bool "Expose master transmitter alias audio_output"
+    default n
+    help
+        The static main.cpp owner profile uses I2S_NUM_0 standard MSB stereo,
+        8..48 kHz, one/two channels, DMA, 1000 ms I/O timeout, and an allowlist
+        of signed little-endian 16/24/32-bit PCM. Float PCM, receive, PDM, and
+        application-selected pin mappings are not exposed. The clock uses an
+        integral 384x MCLK multiple; no external MCLK pin is claimed.
+
+config MB_I2S_AUDIO_BCLK_PIN
+    int "audio_output bit-clock ESP32-S3 GPIO number"
+    depends on MB_I2S_AUDIO_OUTPUT
+    range 0 48
+    default 5
+
+config MB_I2S_AUDIO_WS_PIN
+    int "audio_output word-select ESP32-S3 GPIO number"
+    depends on MB_I2S_AUDIO_OUTPUT
+    range 0 48
+    default 6
+
+config MB_I2S_AUDIO_DOUT_PIN
+    int "audio_output data-out ESP32-S3 GPIO number"
+    depends on MB_I2S_AUDIO_OUTPUT
+    range 0 48
+    default 7
+    help
+        GPIO5/6/7 are explicit ESP32-S3 owner-example choices only. Avoid all
+        reserved board signals and duplicate pins; startup rejects conflicts
+        before controller setup. No codec, amplifier, DMA sample, or loopback
+        is assumed present, and no ESP ETM route is advertised.
+
+endif # MB_I2S
+
+config MB_PACKAGE_URL
+    string "Optional owner-confirmed native application download URL"
+    default ""
+    help
+        Empty keeps the exact embedded .mbp application. Otherwise this must be
+        a direct HTTPS (or deliberate development HTTP) URL ending in .mbp.
+        Selecting it explicitly trusts the selected native bytecode author;
+        startup performs the existing native-package confirmation/download
+        path, then validates capabilities and named endpoint permissions.
+        It never converts a website into a native application.
+
 config MB_GATEWAY_URL
     string "Website conversion gateway origin"
     default "http://10.0.2.2:8765" if MB_QEMU_ETHERNET
