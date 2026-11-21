@@ -148,15 +148,14 @@ class FontDataTests(unittest.TestCase):
 
     def test_packed_kerning_round_trip(self) -> None:
         for face in self.faces:
-            packed = font_data.pack_kerning_pairs(face.kerning)
-            self.assertEqual(font_data.decode_kerning_pairs(packed), face.kerning)
+            offsets, packed = font_data.pack_kerning_pairs(face.kerning)
+            self.assertEqual(font_data.decode_kerning_pairs(packed, offsets), face.kerning)
         limits = (
-            font_data.KerningPair(100, 127, -8),
-            font_data.KerningPair(127, 100, 7),
+            font_data.KerningPair(0, 100, 7),
+            font_data.KerningPair(100, 100, -8),
         )
-        self.assertEqual(
-            font_data.decode_kerning_pairs(font_data.pack_kerning_pairs(limits)), limits
-        )
+        offsets, packed = font_data.pack_kerning_pairs(limits)
+        self.assertEqual(font_data.decode_kerning_pairs(packed, offsets), limits)
 
     def test_packed_kerning_rejects_unrepresentable_values(self) -> None:
         invalid_pairs = (
@@ -168,6 +167,17 @@ class FontDataTests(unittest.TestCase):
         for pair in invalid_pairs:
             with self.assertRaises(ValueError):
                 font_data.pack_kerning_pairs((pair,))
+
+    def test_packed_kerning_requires_sorted_unique_pairs(self) -> None:
+        invalid_pairs = (
+            font_data.KerningPair(0, 1, 1),
+            font_data.KerningPair(0, 0, -1),
+        )
+        with self.assertRaises(ValueError):
+            font_data.pack_kerning_pairs(invalid_pairs)
+        duplicate = (font_data.KerningPair(0, 0, 1),) * 2
+        with self.assertRaises(ValueError):
+            font_data.pack_kerning_pairs(duplicate)
 
     def test_total_coverage_is_bounded(self) -> None:
         self.assertLessEqual(

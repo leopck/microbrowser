@@ -25,8 +25,10 @@ struct Face {
   uint8_t height;
   std::span<const Glyph> glyphs;
   std::span<const uint8_t> coverage;
-  // Seven bits per glyph index and four bits for advance, biased by eight.
-  // Records occupy 18 bits and retain the original pair ordering.
+  // Start indices of each previous glyph's sorted kerning entries.
+  std::span<const uint16_t> kerning_rows;
+  // Each entry contains seven bits for the current glyph and four bits for
+  // advance, biased by eight. Entries occupy 11 bits in pair-index order.
   std::span<const uint8_t> kerning;
 };
 extern const std::array<Face, 12> faces;

@@ -76,21 +76,26 @@ const Glyph& glyph_for(const Face& face, std::size_t index) {
 int pair_advance(const Face& face, std::size_t previous, std::size_t current) noexcept {
     if (previous == glyph_count) return 0;
     if (previous > glyph_count || current >= glyph_count) return 0;
-    constexpr std::size_t kBitsPerPair = 18;
-    constexpr uint32_t kPairMask = (1U << kBitsPerPair) - 1U;
-    const uint32_t wanted = (uint32_t(previous) << 7U) | uint32_t(current);
-    std::size_t begin = 0;
-    std::size_t end = face.kerning.size() * 8U / kBitsPerPair;
+    constexpr std::size_t kBitsPerValue = 11;
+    constexpr uint32_t kValueMask = (1U << kBitsPerValue) - 1U;
+    if (face.kerning_rows.size() != glyph_count + 1U) return 0;
+    if (face.kerning_rows.back() != face.kerning.size() * 8U / kBitsPerValue) return 0;
+    std::size_t begin = face.kerning_rows[previous];
+    std::size_t end = face.kerning_rows[previous + 1U];
     while (begin < end) {
         const std::size_t index = (begin + end) / 2U;
-        const std::size_t byte_offset = index * kBitsPerPair / 8U;
-        const uint32_t window = uint32_t(face.kerning[byte_offset]) |
-                                (uint32_t(face.kerning[byte_offset + 1U]) << 8U) |
-                                (uint32_t(face.kerning[byte_offset + 2U]) << 16U);
-        const uint32_t pair = (window >> ((index * kBitsPerPair) % 8U)) & kPairMask;
-        const uint32_t key = pair >> 4U;
-        if (key == wanted) return int(pair & 0x0fU) - 8;
-        if (key < wanted) begin = index + 1U;
+        const std::size_t byte_offset = index * kBitsPerValue / 8U;
+        const std::size_t shift = (index * kBitsPerValue) % 8U;
+        if (byte_offset >= face.kerning.size()) return 0;
+        const std::size_t remaining = face.kerning.size() - byte_offset;
+        if (remaining * 8U < shift + kBitsPerValue) return 0;
+        uint32_t window = uint32_t(face.kerning[byte_offset]);
+        if (remaining > 1U) window |= uint32_t(face.kerning[byte_offset + 1U]) << 8U;
+        if (remaining > 2U) window |= uint32_t(face.kerning[byte_offset + 2U]) << 16U;
+        const uint32_t value = (window >> shift) & kValueMask;
+        const uint32_t glyph = value >> 4U;
+        if (glyph == current) return int(value & 0x0fU) - 8;
+        if (glyph < current) begin = index + 1U;
         else end = index;
     }
     return 0;

@@ -14,7 +14,7 @@ CODEPOINTS = tuple(range(32, 127)) + (0x00B0, 0x2212, 0x2022, 0x2190, 0x2192, 0x
 GLYPH_COUNT = len(CODEPOINTS)
 MAX_COVERAGE_BYTES = 512 * 1024
 EXPANDED_GLYPH_CAPACITY = 1024
-PACKED_KERNING_BITS = 18
+PACKED_KERNING_VALUE_BITS = 11
 PACKED_KERNING_ADVANCE_BIAS = 8
 FALLBACK_GLYPH_INDEX = ord("?") - 32
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -224,37 +224,62 @@ def _compact_face(face: GeneratedFace) -> GeneratedFace:
     return replace(face, glyphs=tuple(glyphs), coverage=bytes(coverage))
 
 
-def pack_kerning_pairs(pairs: Sequence[KerningPair]) -> bytes:
-    packed = bytearray((len(pairs) * PACKED_KERNING_BITS + 7) // 8)
+def _kerning_row_offsets(pairs: Sequence[KerningPair]) -> tuple[int, ...]:
+    counts = [0] * GLYPH_COUNT
+    for pair in pairs:
+        counts[pair.previous] += 1
+    offsets = [0]
+    for count in counts:
+        offsets.append(offsets[-1] + count)
+    return tuple(offsets)
+
+
+def pack_kerning_pairs(pairs: Sequence[KerningPair]) -> tuple[tuple[int, ...], bytes]:
+    packed = bytearray((len(pairs) * PACKED_KERNING_VALUE_BITS + 7) // 8)
+    previous_key: tuple[int, int] | None = None
     for index, pair in enumerate(pairs):
-        if not 0 <= pair.previous < 128 or not 0 <= pair.current < 128:
-            raise ValueError("Kerning glyph indices must fit seven bits")
+        if not 0 <= pair.previous < GLYPH_COUNT or not 0 <= pair.current < GLYPH_COUNT:
+            raise ValueError("Kerning glyph index exceeds the built-in glyph table")
         if not -8 <= pair.advance <= 7:
             raise ValueError("Kerning advance must fit four signed bits")
-        value = (((pair.previous << 7) | pair.current) << 4) | (
-            pair.advance + PACKED_KERNING_ADVANCE_BIAS
-        )
-        byte_offset, shift = divmod(index * PACKED_KERNING_BITS, 8)
+        key = (pair.previous, pair.current)
+        if previous_key is not None and key <= previous_key:
+            raise ValueError("Kerning pairs must be strictly ordered and unique")
+        previous_key = key
+        value = (pair.current << 4) | (pair.advance + PACKED_KERNING_ADVANCE_BIAS)
+        byte_offset, shift = divmod(index * PACKED_KERNING_VALUE_BITS, 8)
         wide = value << shift
         for byte_index in range(3):
-            packed[byte_offset + byte_index] |= (wide >> (8 * byte_index)) & 0xFF
-    return bytes(packed)
+            target = byte_offset + byte_index
+            if target < len(packed):
+                packed[target] |= (wide >> (8 * byte_index)) & 0xFF
+    return _kerning_row_offsets(pairs), bytes(packed)
 
 
-def decode_kerning_pairs(encoded: bytes) -> tuple[KerningPair, ...]:
+def _read_kerning_value(encoded: bytes, index: int) -> int:
+    byte_offset, shift = divmod(index * PACKED_KERNING_VALUE_BITS, 8)
+    if byte_offset < 0 or byte_offset * 8 + shift + PACKED_KERNING_VALUE_BITS > len(encoded) * 8:
+        raise ValueError("Truncated packed kerning value")
+    available = min(3, len(encoded) - byte_offset)
+    window = int.from_bytes(encoded[byte_offset : byte_offset + available], "little")
+    return (window >> shift) & ((1 << PACKED_KERNING_VALUE_BITS) - 1)
+
+
+def decode_kerning_pairs(
+    encoded: bytes, row_offsets: Sequence[int]
+) -> tuple[KerningPair, ...]:
+    if len(row_offsets) != GLYPH_COUNT + 1:
+        raise ValueError("Kerning row indices must cover every built-in glyph")
+    pair_count = len(encoded) * 8 // PACKED_KERNING_VALUE_BITS
+    if row_offsets[0] != 0 or row_offsets[-1] != pair_count:
+        raise ValueError("Kerning row indices disagree with packed data size")
     pairs = []
-    for index in range(len(encoded) * 8 // PACKED_KERNING_BITS):
-        byte_offset, shift = divmod(index * PACKED_KERNING_BITS, 8)
-        if byte_offset + 3 > len(encoded):
-            raise ValueError("Truncated packed kerning record")
-        window = 0
-        for byte_index in range(3):
-            window |= encoded[byte_offset + byte_index] << (8 * byte_index)
-        value = (window >> shift) & ((1 << PACKED_KERNING_BITS) - 1)
-        pair = value >> 4
-        previous, current = divmod(pair, 128)
-        advance = (value & 0xF) - PACKED_KERNING_ADVANCE_BIAS
-        pairs.append(KerningPair(previous, current, advance))
+    for previous in range(GLYPH_COUNT):
+        for index in range(row_offsets[previous], row_offsets[previous + 1]):
+            value = _read_kerning_value(encoded, index)
+            current = value >> 4
+            advance = (value & 0xF) - PACKED_KERNING_ADVANCE_BIAS
+            pairs.append(KerningPair(previous, current, advance))
     return tuple(pairs)
 
 
@@ -327,7 +352,14 @@ def _coverage_array(name: str, coverage: bytes) -> str:
 
 
 def _kerning_array(name: str, pairs: Sequence[KerningPair]) -> str:
-    return _coverage_array(name, pack_kerning_pairs(pairs))
+    offsets, encoded = pack_kerning_pairs(pairs)
+    rows = []
+    for offset in range(0, len(offsets), 12):
+        rows.append("        " + ", ".join(f"{index}U" for index in offsets[offset : offset + 12]) + ",")
+    row_name = name.replace("kerning_", "kerning_rows_", 1)
+    row_array = _array_definition("uint16_t", row_name, len(offsets), "\n".join(rows)
+    )
+    return row_array + "\n" + _coverage_array(name, encoded)
 
 
 def render_cpp(font_path: Path, faces: Sequence[GeneratedFace]) -> str:
@@ -357,7 +389,7 @@ def render_cpp(font_path: Path, faces: Sequence[GeneratedFace]) -> str:
         suffix = f"{face.pixel_size}_{face.weight}"
         initializers.append(
             f"    Face{{{face.pixel_size}U, {face.weight}U, {face.line_height}U, "
-            f"glyphs_{suffix}, coverage_{suffix}, kerning_{suffix}}},"
+            f"glyphs_{suffix}, coverage_{suffix}, kerning_rows_{suffix}, kerning_{suffix}}},"
         )
     sections.append(
         "const std::array<Face, 12> faces{{\n"
