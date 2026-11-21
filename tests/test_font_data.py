@@ -80,32 +80,31 @@ class FontDataTests(unittest.TestCase):
         for face in self.faces:
             next_offset = 0
             for glyph in face.glyphs:
-                self.assertEqual(glyph.bitmap_offset, next_offset)
                 self.assertGreater(glyph.advance, 0)
                 self.assertLessEqual(glyph.advance, 255)
                 self.assertTrue(-128 <= glyph.bearing_x <= 127)
                 self.assertGreaterEqual(glyph.bearing_y, 0)
                 self.assertLessEqual(glyph.bearing_y + glyph.height, face.line_height)
-                byte_count = ((glyph.width + 1) // 2) * glyph.height
-                self.assertLessEqual(
-                    glyph.bitmap_offset + byte_count, len(face.coverage)
-                )
-                next_offset += byte_count
+                decoded = font_data.decode_glyph_coverage(face, glyph)
+                encoded = font_data.encode_byte_runs(decoded) if glyph.run_length_coded else decoded
+                self.assertLessEqual(len(decoded), font_data.EXPANDED_GLYPH_CAPACITY)
+                self.assertEqual(glyph.bitmap_offset, next_offset)
+                next_offset += len(encoded)
             self.assertEqual(next_offset, len(face.coverage))
 
-    def test_packed_coverage_matches_pillow_masks(self) -> None:
+    def test_coverage_matches_pillow_masks(self) -> None:
         for face in self.faces:
             font = self.fonts[face.pixel_size, face.weight]
             for codepoint, glyph in zip(font_data.CODEPOINTS, face.glyphs, strict=True):
-                bearing_x, bearing_y, width, height, coverage = expected_bitmap(
-                    font, codepoint, face.line_height
-                )
-                self.assertEqual(glyph.bearing_x, bearing_x)
-                self.assertEqual(glyph.bearing_y, bearing_y)
-                self.assertEqual(glyph.width, width)
-                self.assertEqual(glyph.height, height)
-                start = glyph.bitmap_offset
-                self.assertEqual(face.coverage[start : start + len(coverage)], coverage)
+                with self.subTest(face=face.pixel_size, weight=face.weight, codepoint=codepoint):
+                    bearing_x, bearing_y, width, height, coverage = expected_bitmap(
+                        font, codepoint, face.line_height
+                    )
+                    self.assertEqual(glyph.bearing_x, bearing_x)
+                    self.assertEqual(glyph.bearing_y, bearing_y)
+                    self.assertEqual(glyph.width, width)
+                    self.assertEqual(glyph.height, height)
+                    self.assertEqual(font_data.decode_glyph_coverage(face, glyph), coverage)
 
     def test_glyph_advances_match_freetype(self) -> None:
         for face in self.faces:
@@ -139,6 +138,36 @@ class FontDataTests(unittest.TestCase):
                 sorted(actual),
                 "Kerning pairs must support binary lookup by glyph indices",
             )
+
+    def test_byte_runs_round_trip_boundaries(self) -> None:
+        samples = (b"", b"\x00" * 128, b"\x00" * 129, b"abc" * 85,
+                   b"\x00\xff" * 64, b"abbbbbbbc")
+        for sample in samples:
+            encoded = font_data.encode_byte_runs(sample)
+            self.assertEqual(font_data.decode_byte_runs(encoded, len(sample)), sample)
+
+    def test_packed_kerning_round_trip(self) -> None:
+        for face in self.faces:
+            packed = font_data.pack_kerning_pairs(face.kerning)
+            self.assertEqual(font_data.decode_kerning_pairs(packed), face.kerning)
+        limits = (
+            font_data.KerningPair(100, 127, -8),
+            font_data.KerningPair(127, 100, 7),
+        )
+        self.assertEqual(
+            font_data.decode_kerning_pairs(font_data.pack_kerning_pairs(limits)), limits
+        )
+
+    def test_packed_kerning_rejects_unrepresentable_values(self) -> None:
+        invalid_pairs = (
+            font_data.KerningPair(128, 0, 0),
+            font_data.KerningPair(0, 128, 0),
+            font_data.KerningPair(0, 0, -9),
+            font_data.KerningPair(0, 0, 8),
+        )
+        for pair in invalid_pairs:
+            with self.assertRaises(ValueError):
+                font_data.pack_kerning_pairs((pair,))
 
     def test_total_coverage_is_bounded(self) -> None:
         self.assertLessEqual(

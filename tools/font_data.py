@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Sequence
 
@@ -13,6 +13,9 @@ WEIGHTS = (400, 600)
 CODEPOINTS = tuple(range(32, 127)) + (0x00B0, 0x2212, 0x2022, 0x2190, 0x2192, 0x2713)
 GLYPH_COUNT = len(CODEPOINTS)
 MAX_COVERAGE_BYTES = 512 * 1024
+EXPANDED_GLYPH_CAPACITY = 1024
+PACKED_KERNING_BITS = 18
+PACKED_KERNING_ADVANCE_BIAS = 8
 FALLBACK_GLYPH_INDEX = ord("?") - 32
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FONT_PATH = REPO_ROOT / "third_party" / "inter" / "Inter.ttf"
@@ -30,6 +33,7 @@ class GeneratedGlyph:
     advance: int
     bearing_x: int
     bearing_y: int
+    run_length_coded: bool = False
 
 
 @dataclass(frozen=True)
@@ -132,6 +136,128 @@ def _generate_kerning(font: ImageFont.FreeTypeFont) -> tuple[KerningPair, ...]:
     return tuple(pairs)
 
 
+def encode_byte_runs(raw: bytes) -> bytes:
+    if not raw:
+        return b""
+
+    # Pick the cheapest mix of literal tokens (length + bytes) and repeated
+    # tokens (length + value), each holding at most 128 bytes.
+    cost = [0] + [2 * len(raw) + 1] * len(raw)
+    previous: dict[int, tuple[bool, int]] = {}
+    for end in range(1, len(raw) + 1):
+        for start in range(max(0, end - 128), end):
+            candidate = cost[start] + end - start + 1
+            if candidate < cost[end]:
+                cost[end] = candidate
+                previous[end] = (False, start)
+
+        run_start = end - 1
+        while run_start > 0 and raw[run_start - 1] == raw[end - 1]:
+            run_start -= 1
+        for start in range(max(run_start, end - 128), end - 2):
+            candidate = cost[start] + 2
+            if candidate < cost[end]:
+                cost[end] = candidate
+                previous[end] = (True, start)
+
+    groups = []
+    end = len(raw)
+    while end:
+        repeated, start = previous[end]
+        if repeated:
+            groups.append(bytes((0x80 | (end - start - 1), raw[start])))
+        else:
+            groups.append(bytes((end - start - 1,)) + raw[start:end])
+        end = start
+    return b"".join(reversed(groups))
+
+
+def decode_byte_runs(encoded: bytes, output_size: int) -> bytes:
+    decoded = bytearray()
+    offset = 0
+    while len(decoded) < output_size:
+        if offset >= len(encoded):
+            raise ValueError("Truncated byte-run glyph")
+        token = encoded[offset]
+        offset += 1
+        count = (token & 0x7F) + 1
+        if len(decoded) + count > output_size:
+            raise ValueError("Byte-run glyph exceeds its declared dimensions")
+        if token & 0x80:
+            if offset >= len(encoded):
+                raise ValueError("Truncated byte-run value")
+            decoded.extend([encoded[offset]] * count)
+            offset += 1
+        else:
+            if offset + count > len(encoded):
+                raise ValueError("Truncated literal glyph bytes")
+            decoded.extend(encoded[offset : offset + count])
+            offset += count
+    return bytes(decoded)
+
+
+def decode_glyph_coverage(face: GeneratedFace, glyph: GeneratedGlyph) -> bytes:
+    expected_size = ((glyph.width + 1) // 2) * glyph.height
+    encoded = face.coverage[glyph.bitmap_offset :]
+    if glyph.run_length_coded:
+        return decode_byte_runs(encoded, expected_size)
+    if len(encoded) < expected_size:
+        raise ValueError("Truncated uncompressed glyph")
+    return encoded[:expected_size]
+
+
+def _compact_face(face: GeneratedFace) -> GeneratedFace:
+    glyphs = []
+    coverage = bytearray()
+    for glyph in face.glyphs:
+        raw = decode_glyph_coverage(face, glyph)
+        if len(raw) > EXPANDED_GLYPH_CAPACITY:
+            raise ValueError("Glyph exceeds the bounded decoder buffer")
+        encoded = encode_byte_runs(raw)
+        run_length_coded = len(encoded) < len(raw)
+        glyphs.append(replace(
+            glyph,
+            bitmap_offset=len(coverage),
+            run_length_coded=run_length_coded,
+        ))
+        coverage.extend(encoded if run_length_coded else raw)
+    return replace(face, glyphs=tuple(glyphs), coverage=bytes(coverage))
+
+
+def pack_kerning_pairs(pairs: Sequence[KerningPair]) -> bytes:
+    packed = bytearray((len(pairs) * PACKED_KERNING_BITS + 7) // 8)
+    for index, pair in enumerate(pairs):
+        if not 0 <= pair.previous < 128 or not 0 <= pair.current < 128:
+            raise ValueError("Kerning glyph indices must fit seven bits")
+        if not -8 <= pair.advance <= 7:
+            raise ValueError("Kerning advance must fit four signed bits")
+        value = (((pair.previous << 7) | pair.current) << 4) | (
+            pair.advance + PACKED_KERNING_ADVANCE_BIAS
+        )
+        byte_offset, shift = divmod(index * PACKED_KERNING_BITS, 8)
+        wide = value << shift
+        for byte_index in range(3):
+            packed[byte_offset + byte_index] |= (wide >> (8 * byte_index)) & 0xFF
+    return bytes(packed)
+
+
+def decode_kerning_pairs(encoded: bytes) -> tuple[KerningPair, ...]:
+    pairs = []
+    for index in range(len(encoded) * 8 // PACKED_KERNING_BITS):
+        byte_offset, shift = divmod(index * PACKED_KERNING_BITS, 8)
+        if byte_offset + 3 > len(encoded):
+            raise ValueError("Truncated packed kerning record")
+        window = 0
+        for byte_index in range(3):
+            window |= encoded[byte_offset + byte_index] << (8 * byte_index)
+        value = (window >> shift) & ((1 << PACKED_KERNING_BITS) - 1)
+        pair = value >> 4
+        previous, current = divmod(pair, 128)
+        advance = (value & 0xF) - PACKED_KERNING_ADVANCE_BIAS
+        pairs.append(KerningPair(previous, current, advance))
+    return tuple(pairs)
+
+
 def _generate_face(font_path: Path, pixel_size: int, weight: int) -> GeneratedFace:
     font = load_font(font_path, pixel_size, weight)
     ascent, descent = font.getmetrics()
@@ -148,14 +274,14 @@ def _generate_face(font_path: Path, pixel_size: int, weight: int) -> GeneratedFa
         )
         glyphs.append(glyph)
         coverage.extend(packed)
-    return GeneratedFace(
+    return _compact_face(GeneratedFace(
         pixel_size=pixel_size,
         weight=weight,
         line_height=line_height,
         glyphs=tuple(glyphs),
         coverage=bytes(coverage),
         kerning=_generate_kerning(font),
-    )
+    ))
 
 
 def generate_faces(font_path: Path = DEFAULT_FONT_PATH) -> tuple[GeneratedFace, ...]:
@@ -180,13 +306,15 @@ def _array_definition(element_type: str, name: str, count: int, body: str) -> st
 
 
 def _glyph_array(name: str, glyphs: Sequence[GeneratedGlyph]) -> str:
-    rows = [
-        "        "
-        f"Glyph{{{glyph.bitmap_offset}U, {glyph.width}U, {glyph.height}U, "
-        f"{glyph.advance}U, {glyph.bearing_x}, {glyph.bearing_y}}}, "
-        f"// U+{codepoint:04X}"
-        for codepoint, glyph in zip(CODEPOINTS, glyphs, strict=True)
-    ]
+    rows = []
+    for codepoint, glyph in zip(CODEPOINTS, glyphs, strict=True):
+        encoding = "byte_runs" if glyph.run_length_coded else "packed_nibbles"
+        rows.append(
+            "        "
+            f"Glyph{{{glyph.bitmap_offset}U, {glyph.width}U, {glyph.height}U, "
+            f"{glyph.advance}U, {glyph.bearing_x}, {glyph.bearing_y}, "
+            f"CoverageEncoding::{encoding}}}, // U+{codepoint:04X}"
+        )
     return _array_definition("Glyph", name, len(glyphs), "\n".join(rows))
 
 
@@ -199,11 +327,7 @@ def _coverage_array(name: str, coverage: bytes) -> str:
 
 
 def _kerning_array(name: str, pairs: Sequence[KerningPair]) -> str:
-    rows = [
-        f"        Pair{{{pair.previous}U, {pair.current}U, {pair.advance}}},"
-        for pair in pairs
-    ]
-    return _array_definition("Pair", name, len(pairs), "\n".join(rows))
+    return _coverage_array(name, pack_kerning_pairs(pairs))
 
 
 def render_cpp(font_path: Path, faces: Sequence[GeneratedFace]) -> str:

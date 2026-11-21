@@ -80,6 +80,7 @@ if [[ "${gatt_mode}" == 1 ]]; then
         -DEXTRA_CONF_FILE="${project_dir}/gatt.conf"
         # This overlay belongs only to the application image, not hci_ipc.
         -Dnrf5340_app_EXTRA_DTC_OVERLAY_FILE="${project_dir}/gatt.overlay"
+        -Dnrf5340_app_SNIPPET=nrf70-fw-patch-ext-flash
         -DCMAKE_PROGRAM_PATH=/usr/bin
     )
 fi
@@ -91,4 +92,5 @@ fi
 if [[ "${gatt_mode}" == 1 ]]; then
     printf 'Application images: %s/nrf5340_app/zephyr/zephyr.{elf,hex}\n' "${build_dir}"
     printf 'Controller images:  %s/hci_ipc/zephyr/zephyr.{elf,hex}\n' "${build_dir}"
+    printf 'Wi-Fi firmware:    %s/nrf70.hex\n' "${build_dir}"
 fi

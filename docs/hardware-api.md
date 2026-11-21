@@ -483,6 +483,13 @@ This is an explicit non-MCUboot deployment: flashing it replaces the previous
 bootloader layout and does not provide MCUboot update slots. A signed FOTA
 deployment needs its own measured and tested layout; this profile does not claim it.
 
+The first 128 KiB of the board's external flash holds the nRF70 firmware
+patches, which the Wi-Fi driver transfers into Wi-Fi RAM. The application
+limits its shared heap to 155,648 bytes; Wi-Fi and TLS retain their dedicated
+pools. A complete physical programming operation needs all three artifacts:
+the application, `hci_ipc` controller, and `nrf70.hex` patch image. External
+storage does not contain the Wi-Fi settings, which stay in the internal area above.
+
 Bsim is an x86 Zephyr execution using the Nordic hardware models, not an ARM
 firmware run. Its input schedule is `firmware/nrf5340_gpio/bsim_input.csv`.
 The successful sequence reaches `GPIO Bsim alternating-edge notifications

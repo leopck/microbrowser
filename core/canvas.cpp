@@ -20,6 +20,8 @@ constexpr std::array<uint8_t, 16> coverage_alpha{
     0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255,
 };
 
+constexpr std::size_t kDecodedGlyphCapacity = 1024;
+
 int corner_inset(int radius, int relative_y, int height) {
     if (relative_y < radius) {
         const int dy = radius - relative_y - 1;
@@ -253,6 +255,8 @@ void Canvas::text(int x, int y, std::string_view utf8, int font_size, Color colo
                   uint8_t opacity, Rect clip, int font_weight) {
     const fonts::Face& face = fonts::face_for(font_size, font_weight);
     std::size_t previous = fonts::glyph_count;
+    if (opacity == 0 || color.alpha() == 0) return;
+    std::array<uint8_t, kDecodedGlyphCapacity> decoded_glyph;
     for (std::size_t offset = 0; offset < utf8.size();) {
         const auto character = next_utf8(utf8, offset);
         offset += character.length;
@@ -261,10 +265,9 @@ void Canvas::text(int x, int y, std::string_view utf8, int font_size, Color colo
         const fonts::Glyph& glyph = fonts::glyph_for(face, index);
         x += fonts::pair_advance(face, previous, index);
         if (glyph.width != 0 && glyph.height != 0) {
-            const int row_bytes = (int(glyph.width) + 1) / 2;
+            const auto packed_coverage = fonts::decode_glyph_coverage(face, glyph, decoded_glyph);
             coverage({x + glyph.bearing_x, y + glyph.bearing_y, glyph.width, glyph.height},
-                     face.coverage.subspan(glyph.bitmap_offset, std::size_t(row_bytes) * glyph.height),
-                     color, opacity, clip);
+                     packed_coverage, color, opacity, clip);
         }
         x += glyph.advance;
         previous = index;
