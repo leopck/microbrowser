@@ -179,6 +179,8 @@ class FontDataTests(unittest.TestCase):
         self.assertEqual(
             CPP_PATH.read_text(encoding="utf-8"),
             font_data.render_cpp(FONT_PATH, self.faces),
+            "Host font rasterizers can differ. Use the canonical CI-generated "
+            "font-source-diagnostic/font_data.cpp artifact.",
         )
 
 

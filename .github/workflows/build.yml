@@ -95,7 +95,7 @@ jobs:
 
       - name: Record font-source differences
         id: font_source_differences
-        if: ${{ always() && steps.host_tests.outcome == 'failure' }}
+        if: ${{ always() }}
         run: |
           .tools/gateway-venv/bin/python tools/build_fonts.py --output build/font_data.cpp
           diff_status=0
